@@ -2,10 +2,10 @@
 
 ## Status
 
-This document fixes the ownership and dependency boundaries for the planned
-Kotlin SDK. It does not describe an existing implementation. Gradle manifests,
-production modules, generated models, and contract.lock will be introduced only
-after the core repository publishes an authoritative contract bundle.
+This document describes the unreleased `0.1.0-SNAPSHOT` implementation locked
+to contract `0.1.0` and wire protocol `1`. Public APIs remain handwritten; the
+internal JSON boundary is validated directly against the core schemas and
+shared fixtures.
 
 ## System boundary
 
@@ -36,7 +36,7 @@ bundle checksum, update contract.lock, regenerate internal wire DTOs
 reproducibly, run shared vectors, and pass conformance against the exact core
 image. Generated wire DTOs must not become the public Kotlin API.
 
-## Planned module boundaries
+## Module boundaries
 
 ~~~text
 Customer application
@@ -58,12 +58,15 @@ Customer application
     |     Deterministic test signers, storage, clocks, transports, and fixtures
     |
     +-- latchway-bom
-          Published dependency alignment only
+          Dependency alignment only
 ~~~
 
 Integration modules depend inward on stable core interfaces. Core must not
 require OkHttp, Firebase, or Play Integrity. React Native depends on these
-published modules for all Android security behavior.
+modules for all Android security behavior. It selects the explicit
+`react_native_android` client platform and `react-native` SDK identity; keys and
+encrypted state are namespaced by that platform so a host app cannot
+accidentally reuse an Android-native session under a different wire identity.
 
 ## Key and state boundary
 
@@ -72,10 +75,18 @@ StrongBox is preferred when supported and configured; otherwise hardware-backed
 Keystore is preferred. Any software fallback is policy-controlled and visible
 to diagnostics. Only a public JWK and its RFC thumbprint leave the device.
 
-Refresh state is encrypted using Android Keystore material. Coroutine-safe
-coordination protects refresh single flight. Play Integrity has a separate
-provider lifecycle; its requestHash binds the core-defined canonical challenge
-bytes. Retries are bounded to documented transient platform errors.
+Refresh state is serialized, bound to application/environment state with AES
+additional authenticated data, and encrypted with a distinct Android Keystore
+AES-256-GCM key. Coroutine-safe coordination protects both first exchange and
+refresh single flight.
+
+The server constructs the canonical attestation binding because it owns the
+resolved principal. Its challenge includes `client_data_hash`, the 43-character
+base64url SHA-256 output. The Play adapter validates that value and passes the
+same string directly to the Standard API as `requestHash`; the SDK never tries
+to recreate principal-bound JSON or hash the hash. Provider preparation and
+renewal are synchronized, and only documented transient platform codes receive
+bounded exponential retries.
 
 ## Transport boundary
 
@@ -84,6 +95,13 @@ libraries. The interceptor and authenticator must recognize one-shot and
 non-replayable bodies. A request is retried only when Latchway proves rejection
 before upstream dispatch; uncertain or partially consumed requests are returned
 to the caller without automatic replay.
+
+Control-plane calls use a dedicated OkHttp dispatcher and connection pool.
+Application interceptors, network interceptors, authenticators, cookies, and
+redirects are removed, preventing recursive session establishment and
+cross-origin control credential forwarding.
+Credential attachment is pinned to the configured scheme, host, and effective
+port. Control responses and problem bodies have strict byte limits.
 
 Cancellation and streaming flow end to end. Errors expose stable safe fields
 and request identifiers, never tokens or raw integrity evidence.

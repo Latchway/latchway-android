@@ -1,0 +1,115 @@
+{
+  "format_version": 1,
+  "contract_version": "0.1.0",
+  "wire_protocol_version": 1,
+  "reference_time": 1700000030,
+  "maximum_iat_skew_seconds": 60,
+  "fixture_access_token": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c3JfZml4dHVyZSJ9.c2lnbmF0dXJl",
+  "fixture_access_token_hash": "X_dj9FlLQtSFPPvDrE0ikzGJFqDLH7R1zAEmHe4rZrY",
+  "public_jwk": {
+    "kty": "EC",
+    "x": "Cq0dYDxoGL4oLYM_cwDclqKoVgkU5OeuoXo_L4Z418s",
+    "y": "N5wrFgi5unJsGvU57MC-o4Iv5VHL-V6Sl9_2AcOS6cI",
+    "crv": "P-256"
+  },
+  "private_jwk_for_tests_only": {
+    "kty": "EC",
+    "x": "Cq0dYDxoGL4oLYM_cwDclqKoVgkU5OeuoXo_L4Z418s",
+    "y": "N5wrFgi5unJsGvU57MC-o4Iv5VHL-V6Sl9_2AcOS6cI",
+    "crv": "P-256",
+    "d": "2ZFd1bc5bCB8zu8OEf5l7O9x_SxbsQNQMNn0si4NxxI"
+  },
+  "jwk_thumbprint_canonical_json": "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"Cq0dYDxoGL4oLYM_cwDclqKoVgkU5OeuoXo_L4Z418s\",\"y\":\"N5wrFgi5unJsGvU57MC-o4Iv5VHL-V6Sl9_2AcOS6cI\"}",
+  "jwk_thumbprint_sha256_base64url": "bX0yCl562RPdpf8cJHVLBeUXu6PWExYJ0w-Bydre3q8",
+  "vectors": [
+    {
+      "id": "valid_session_challenge",
+      "purpose": "A valid ES256 proof without ath before an access token exists.",
+      "proof": "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVTMjU2IiwiandrIjp7Imt0eSI6IkVDIiwiY3J2IjoiUC0yNTYiLCJ4IjoiQ3EwZFlEeG9HTDRvTFlNX2N3RGNscUtvVmdrVTVPZXVvWG9fTDRaNDE4cyIsInkiOiJONXdyRmdpNXVuSnNHdlU1N01DLW80SXY1VkhMLVY2U2w5XzJBY09TNmNJIn19.eyJodG0iOiJQT1NUIiwiaHR1IjoiaHR0cHM6Ly9nYXRld2F5LmV4YW1wbGUudGVzdC9jbGllbnQvdjEvc2Vzc2lvbi1jaGFsbGVuZ2VzIiwiaWF0IjoxNzAwMDAwMDAwLCJqdGkiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDEifQ.9obPynRYtZBdfZrYbAe9xFDw_HBzesMO9uAXDpxYFdLyL03YkCVyqU51YGDF-ohFKJRkxNU7sRcTsK-4FY84fQ",
+      "request": {
+        "method": "POST",
+        "uri": "https://gateway.example.test/client/v1/session-challenges"
+      },
+      "expected": { "valid": true }
+    },
+    {
+      "id": "valid_protected_request",
+      "purpose": "A valid proof whose ath covers the exact fixture access-token ASCII bytes.",
+      "proof": "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVTMjU2IiwiandrIjp7Imt0eSI6IkVDIiwiY3J2IjoiUC0yNTYiLCJ4IjoiQ3EwZFlEeG9HTDRvTFlNX2N3RGNscUtvVmdrVTVPZXVvWG9fTDRaNDE4cyIsInkiOiJONXdyRmdpNXVuSnNHdlU1N01DLW80SXY1VkhMLVY2U2w5XzJBY09TNmNJIn19.eyJodG0iOiJQT1NUIiwiaHR1IjoiaHR0cHM6Ly9nYXRld2F5LmV4YW1wbGUudGVzdC92MS9yZXNwb25zZXMiLCJpYXQiOjE3MDAwMDAwMDAsImp0aSI6IjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMiIsImF0aCI6IlhfZGo5RmxMUXRTRlBQdkRyRTBpa3pHSkZxRExIN1IxekFFbUhlNHJaclkifQ.Qq8AVUncv5WZ7WA2lbrek4GWytjB_wMp9bjMYtg1k3A21hdbDslTcC6ATVOPc_XwlOpmYyznH__BnRHaAz5zuw",
+      "request": {
+        "method": "POST",
+        "uri": "https://gateway.example.test/v1/responses",
+        "use_fixture_access_token": true
+      },
+      "expected": { "valid": true }
+    },
+    {
+      "id": "valid_nonce_proof",
+      "purpose": "A valid protected proof containing the server-required nonce.",
+      "proof": "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVTMjU2IiwiandrIjp7Imt0eSI6IkVDIiwiY3J2IjoiUC0yNTYiLCJ4IjoiQ3EwZFlEeG9HTDRvTFlNX2N3RGNscUtvVmdrVTVPZXVvWG9fTDRaNDE4cyIsInkiOiJONXdyRmdpNXVuSnNHdlU1N01DLW80SXY1VkhMLVY2U2w5XzJBY09TNmNJIn19.eyJodG0iOiJHRVQiLCJodHUiOiJodHRwczovL2dhdGV3YXkuZXhhbXBsZS50ZXN0L2NsaWVudC92MS9kaWFnbm9zdGljcyIsImlhdCI6MTcwMDAwMDAwMCwianRpIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAzIiwiYXRoIjoiWF9kajlGbExRdFNGUFB2RHJFMGlrekdKRnFETEg3UjF6QUVtSGU0clpyWSIsIm5vbmNlIjoibm9uY2UtZml4dHVyZS0wMTIzNDU2Nzg5YWJjZGVmIn0.uvsRXbYr_CiDjI29gWzfcj9WpQ3Z9VyNG19zOdzWizd1qSR2tONHtbNfyaYdIRWGhw7dmasKIjt-p4EPKRBOcg",
+      "request": {
+        "method": "GET",
+        "uri": "https://gateway.example.test/client/v1/diagnostics",
+        "use_fixture_access_token": true,
+        "required_nonce": "nonce-fixture-0123456789abcdef"
+      },
+      "expected": { "valid": true }
+    },
+    {
+      "id": "wrong_http_method",
+      "purpose": "The signed htm is GET while the actual request is POST.",
+      "proof": "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVTMjU2IiwiandrIjp7Imt0eSI6IkVDIiwiY3J2IjoiUC0yNTYiLCJ4IjoiQ3EwZFlEeG9HTDRvTFlNX2N3RGNscUtvVmdrVTVPZXVvWG9fTDRaNDE4cyIsInkiOiJONXdyRmdpNXVuSnNHdlU1N01DLW80SXY1VkhMLVY2U2w5XzJBY09TNmNJIn19.eyJodG0iOiJHRVQiLCJodHUiOiJodHRwczovL2dhdGV3YXkuZXhhbXBsZS50ZXN0L3YxL3Jlc3BvbnNlcyIsImlhdCI6MTcwMDAwMDAwMCwianRpIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDA0IiwiYXRoIjoiWF9kajlGbExRdFNGUFB2RHJFMGlrekdKRnFETEg3UjF6QUVtSGU0clpyWSJ9.9yxWWFeY9H34xdOk31wb8r1b9tb2eucqVTVsqKsz0DmJfAdBckb8XD91cWSQV20Q216vE0p_tO9B24RaQsz8Aw",
+      "request": {
+        "method": "POST",
+        "uri": "https://gateway.example.test/v1/responses",
+        "use_fixture_access_token": true
+      },
+      "expected": { "valid": false, "error_code": "dpop_invalid" }
+    },
+    {
+      "id": "wrong_http_uri",
+      "purpose": "The signed htu names embeddings while the actual request targets responses.",
+      "proof": "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVTMjU2IiwiandrIjp7Imt0eSI6IkVDIiwiY3J2IjoiUC0yNTYiLCJ4IjoiQ3EwZFlEeG9HTDRvTFlNX2N3RGNscUtvVmdrVTVPZXVvWG9fTDRaNDE4cyIsInkiOiJONXdyRmdpNXVuSnNHdlU1N01DLW80SXY1VkhMLVY2U2w5XzJBY09TNmNJIn19.eyJodG0iOiJQT1NUIiwiaHR1IjoiaHR0cHM6Ly9nYXRld2F5LmV4YW1wbGUudGVzdC92MS9lbWJlZGRpbmdzIiwiaWF0IjoxNzAwMDAwMDAwLCJqdGkiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDUiLCJhdGgiOiJYX2RqOUZsTFF0U0ZQUHZEckUwaWt6R0pGcURMSDdSMXpBRW1IZTRyWnJZIn0.p3mfSc7WnPE6-y2zoSbmESbpwMHMUiLkd6-yEGmSkS92ktToZvkDW3CdCqLl-6taGzxCqqLKFZHyHWg6LJ7y5A",
+      "request": {
+        "method": "POST",
+        "uri": "https://gateway.example.test/v1/responses",
+        "use_fixture_access_token": true
+      },
+      "expected": { "valid": false, "error_code": "dpop_invalid" }
+    },
+    {
+      "id": "missing_access_token_hash",
+      "purpose": "A protected request proof is correctly signed but omits required ath.",
+      "proof": "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVTMjU2IiwiandrIjp7Imt0eSI6IkVDIiwiY3J2IjoiUC0yNTYiLCJ4IjoiQ3EwZFlEeG9HTDRvTFlNX2N3RGNscUtvVmdrVTVPZXVvWG9fTDRaNDE4cyIsInkiOiJONXdyRmdpNXVuSnNHdlU1N01DLW80SXY1VkhMLVY2U2w5XzJBY09TNmNJIn19.eyJodG0iOiJQT1NUIiwiaHR1IjoiaHR0cHM6Ly9nYXRld2F5LmV4YW1wbGUudGVzdC92MS9yZXNwb25zZXMiLCJpYXQiOjE3MDAwMDAwMDAsImp0aSI6IjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwNiJ9.s4V0nT1FIUN8Gs4h4z46U0akoN-ycdcELtNjHxipR9zldixZQLWGrt6IbOkMIHPBOn_b2K2wHT0mVnDSDeQ-iA",
+      "request": {
+        "method": "POST",
+        "uri": "https://gateway.example.test/v1/responses",
+        "use_fixture_access_token": true
+      },
+      "expected": { "valid": false, "error_code": "dpop_invalid" }
+    },
+    {
+      "id": "private_jwk_member",
+      "purpose": "The proof header improperly exposes the private d member and must be rejected even though the signature verifies.",
+      "proof": "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVTMjU2IiwiandrIjp7Imt0eSI6IkVDIiwiY3J2IjoiUC0yNTYiLCJ4IjoiQ3EwZFlEeG9HTDRvTFlNX2N3RGNscUtvVmdrVTVPZXVvWG9fTDRaNDE4cyIsInkiOiJONXdyRmdpNXVuSnNHdlU1N01DLW80SXY1VkhMLVY2U2w5XzJBY09TNmNJIiwiZCI6IjJaRmQxYmM1YkNCOHp1OE9FZjVsN085eF9TeGJzUU5RTU5uMHNpNE54eEkifX0.eyJodG0iOiJQT1NUIiwiaHR1IjoiaHR0cHM6Ly9nYXRld2F5LmV4YW1wbGUudGVzdC92MS9yZXNwb25zZXMiLCJpYXQiOjE3MDAwMDAwMDAsImp0aSI6IjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwNyIsImF0aCI6IlhfZGo5RmxMUXRTRlBQdkRyRTBpa3pHSkZxRExIN1IxekFFbUhlNHJaclkifQ.Mvk6qQqIwGSUDdDA_uk1IqxLdXIasVKEUB-0TQ9NROfW-hQ3qJpL2UHx9hpmGmJOJkTCBjFSkPHDS8RXm7zV2g",
+      "request": {
+        "method": "POST",
+        "uri": "https://gateway.example.test/v1/responses",
+        "use_fixture_access_token": true
+      },
+      "expected": { "valid": false, "error_code": "dpop_invalid" }
+    },
+    {
+      "id": "replayed_jti",
+      "purpose": "A previously accepted protected proof must fail replay insertion before dispatch.",
+      "proof": "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVTMjU2IiwiandrIjp7Imt0eSI6IkVDIiwiY3J2IjoiUC0yNTYiLCJ4IjoiQ3EwZFlEeG9HTDRvTFlNX2N3RGNscUtvVmdrVTVPZXVvWG9fTDRaNDE4cyIsInkiOiJONXdyRmdpNXVuSnNHdlU1N01DLW80SXY1VkhMLVY2U2w5XzJBY09TNmNJIn19.eyJodG0iOiJQT1NUIiwiaHR1IjoiaHR0cHM6Ly9nYXRld2F5LmV4YW1wbGUudGVzdC92MS9yZXNwb25zZXMiLCJpYXQiOjE3MDAwMDAwMDAsImp0aSI6IjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMiIsImF0aCI6IlhfZGo5RmxMUXRTRlBQdkRyRTBpa3pHSkZxRExIN1IxekFFbUhlNHJaclkifQ.Qq8AVUncv5WZ7WA2lbrek4GWytjB_wMp9bjMYtg1k3A21hdbDslTcC6ATVOPc_XwlOpmYyznH__BnRHaAz5zuw",
+      "request": {
+        "method": "POST",
+        "uri": "https://gateway.example.test/v1/responses",
+        "use_fixture_access_token": true,
+        "proof_jti_already_seen": true
+      },
+      "expected": { "valid": false, "error_code": "dpop_replayed" }
+    }
+  ]
+}

@@ -8,11 +8,10 @@ Build the Kotlin SDK that lets Android applications authenticate to Latchway,
 establish device-bound sessions, and authorize ordinary HTTP requests without
 holding an upstream provider credential.
 
-This repository currently contains governance and architecture foundations
-only. Do not add Gradle manifests, production SDK source, generated wire models,
-or contract.lock until the core repository has published the corresponding
-contract bundle and the active implementation phase authorizes that work. Never
-invent a temporary wire contract or fake production behavior.
+This repository contains the unreleased Android SDK implementation for contract
+0.1.0 and wire protocol 1. Keep `contract.lock`, vendored vectors, runtime
+behavior, and documentation aligned to an authoritative core contract bundle.
+Never invent a temporary wire contract or fake production behavior.
 
 ## Authority and dependency boundaries
 
@@ -21,7 +20,7 @@ invent a temporary wire contract or fake production behavior.
   and compatibility policy.
 - Consume checksummed contract releases. Generated DTOs may be internal; public
   Kotlin APIs must remain handwritten and idiomatic.
-- Planned modules are latchway-core, latchway-okhttp,
+- Modules are latchway-core, latchway-okhttp,
   latchway-play-integrity, latchway-firebase-auth, latchway-bom, and
   test-support.
 - Firebase and Play Integrity must not become dependencies of the core module.
@@ -34,8 +33,9 @@ invent a temporary wire contract or fake production behavior.
 - Prefer StrongBox when available and configured, then hardware-backed
   Keystore. Any software fallback must be policy-controlled and accurately
   reported.
-- Follow RFC 9449 for DPoP and the core canonical binding for Play Integrity
-  requestHash.
+- Follow RFC 9449 for DPoP. Validate the challenge `client_data_hash` and pass
+  it directly to Play Integrity as `requestHash`; never hash it again or
+  reconstruct server principal-bound canonical JSON.
 - Encrypt persisted refresh state with an Android Keystore key and prevent
   refresh stampedes.
 - OkHttp integration must detect one-shot and non-replayable bodies. Never
@@ -47,7 +47,7 @@ invent a temporary wire contract or fake production behavior.
 
 ## Kotlin and Android implementation rules
 
-- Planned minimum API level is 23 unless a lower secure baseline is proven and
+- Minimum API level is 23 unless a lower secure baseline is proven and
   documented.
 - Pin the Gradle wrapper, Android Gradle Plugin, Kotlin, and JDK compatibility
   deliberately; do not rely on a developer's globally installed Gradle.
@@ -59,9 +59,9 @@ invent a temporary wire contract or fake production behavior.
 
 ## Testing and validation
 
-When the project exists, every change must keep wrapper builds and tests
-passing. Security/protocol work requires shared vectors and core-container
-conformance. Test StrongBox selection, TEE and policy fallback, refresh
+Every change must keep wrapper builds and tests passing. Security/protocol work
+requires shared vectors and core-container conformance. Test StrongBox
+selection, TEE and policy fallback, refresh
 concurrency, cancellation, streaming, encrypted persistence, redaction,
 installation revocation, and non-replayable bodies.
 
