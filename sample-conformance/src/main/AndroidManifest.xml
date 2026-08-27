@@ -1,0 +1,16 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application android:label="Latchway Play Conformance" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <meta-data android:name="dev.latchway.GATEWAY_URL" android:value="${latchwayGatewayUrl}" />
+        <meta-data android:name="dev.latchway.APPLICATION_ID" android:value="${latchwayApplicationId}" />
+        <meta-data android:name="dev.latchway.ENVIRONMENT" android:value="${latchwayEnvironment}" />
+        <meta-data android:name="dev.latchway.FEATURE" android:value="${latchwayFeature}" />
+        <meta-data android:name="dev.latchway.CLOUD_PROJECT_NUMBER" android:value="${latchwayCloudProjectNumber}" />
+        <activity android:name=".ConformanceActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
