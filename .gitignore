@@ -1,0 +1,27 @@
+# Operating system and IDE state
+.DS_Store
+.idea/
+*.iml
+
+# Gradle and Android build output
+.gradle/
+**/build/
+local.properties
+.externalNativeBuild/
+.cxx/
+captures/
+
+# Local credentials and signing material
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+*.p12
+*.pem
+*.properties.local
+
+# Optional repository-local agent tooling is not an SDK input.
+/.agents/
+/.claude/skills/
+/skills-lock.json
