@@ -1,0 +1,84 @@
+name: Android SDK release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment: maven-central
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Check out the exact release tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Configure Java 17
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Configure the Android SDK
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+      - name: Install the pinned Android platform and build tools
+        run: sdkmanager "platforms;android-37" "build-tools;36.0.0"
+      - name: Validate source, tag, and contract metadata
+        run: scripts/release-preflight.sh "$GITHUB_REF_NAME"
+      - name: Run the complete Android SDK gate
+        env:
+          LATCHWAY_VERSION: ${{ github.ref_name }}
+        run: |
+          export LATCHWAY_VERSION="${LATCHWAY_VERSION#v}"
+          ./gradlew test assemble lint --no-daemon
+      - name: Build and verify the reproducible Maven bundle
+        env:
+          LATCHWAY_VERSION: ${{ github.ref_name }}
+        run: |
+          export LATCHWAY_VERSION="${LATCHWAY_VERSION#v}"
+          scripts/build-release-artifacts.sh "$LATCHWAY_VERSION"
+      - name: Attest the exact release bundle
+        uses: actions/attest-build-provenance@e4d4f7c39adfa4c260fb5c147f0622000aa14b99 # v4.0.0
+        with:
+          subject-path: build/release/latchway-android-*-maven-repository.zip
+      - name: Publish signed artifacts to Maven Central
+        env:
+          LATCHWAY_RELEASE_VERSION: ${{ github.ref_name }}
+          LATCHWAY_CENTRAL_PUBLISHING_TYPE: automatic
+          LATCHWAY_MAVEN_CENTRAL_USERNAME: ${{ secrets.LATCHWAY_MAVEN_CENTRAL_USERNAME }}
+          LATCHWAY_MAVEN_CENTRAL_PASSWORD: ${{ secrets.LATCHWAY_MAVEN_CENTRAL_PASSWORD }}
+          LATCHWAY_SIGNING_KEY: ${{ secrets.LATCHWAY_SIGNING_KEY }}
+          LATCHWAY_SIGNING_PASSWORD: ${{ secrets.LATCHWAY_SIGNING_PASSWORD }}
+        run: |
+          export LATCHWAY_RELEASE_VERSION="${LATCHWAY_RELEASE_VERSION#v}"
+          scripts/publish-central.sh
+      - name: Verify the immutable public artifacts
+        env:
+          LATCHWAY_RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          export LATCHWAY_RELEASE_VERSION="${LATCHWAY_RELEASE_VERSION#v}"
+          scripts/verify-central-release.sh "$LATCHWAY_RELEASE_VERSION"
+      - name: Create the GitHub release after registry verification
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            build/release/latchway-android-*-maven-repository.zip \
+            build/release/SHA256SUMS

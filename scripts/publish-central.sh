@@ -13,6 +13,7 @@ repository_root=$(cd "$script_directory/.." && pwd)
 : "${LATCHWAY_SIGNING_PASSWORD:?Set the OpenPGP private-key password}"
 
 namespace=${LATCHWAY_MAVEN_CENTRAL_NAMESPACE:-dev.latchway}
+publishing_type=${LATCHWAY_CENTRAL_PUBLISHING_TYPE:-user_managed}
 if [[ ! "$LATCHWAY_RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
   echo "LATCHWAY_RELEASE_VERSION must be a non-SNAPSHOT semantic version" >&2
   exit 64
@@ -25,6 +26,13 @@ if [[ ! "$namespace" =~ ^[A-Za-z0-9]+([._-][A-Za-z0-9]+)*$ ]]; then
   echo "LATCHWAY_MAVEN_CENTRAL_NAMESPACE is invalid" >&2
   exit 64
 fi
+case "$publishing_type" in
+  user_managed|automatic|portal_api) ;;
+  *)
+    echo "LATCHWAY_CENTRAL_PUBLISHING_TYPE must be user_managed, automatic, or portal_api" >&2
+    exit 64
+    ;;
+esac
 
 if [[ -n "$(git -C "$repository_root" status --porcelain)" ]]; then
   echo "Refusing to stage a Maven Central release from a dirty worktree" >&2
@@ -38,6 +46,20 @@ if [[ "$tag_commit" != "$head_commit" && "${LATCHWAY_ALLOW_UNTAGGED_RELEASE_FOR_
   echo "HEAD must be tagged $release_tag before release staging" >&2
   exit 1
 fi
+
+central_pom="https://repo1.maven.org/maven2/dev/latchway/latchway-core/$LATCHWAY_RELEASE_VERSION/latchway-core-$LATCHWAY_RELEASE_VERSION.pom"
+central_status=$(curl --silent --show-error --location --head --output /dev/null --write-out '%{http_code}' "$central_pom")
+case "$central_status" in
+  404) ;;
+  200)
+    echo "dev.latchway:latchway-core:$LATCHWAY_RELEASE_VERSION already exists on Maven Central" >&2
+    exit 1
+    ;;
+  *)
+    echo "Could not prove Maven Central version availability (HTTP $central_status)" >&2
+    exit 1
+    ;;
+esac
 
 (
   unset LATCHWAY_MAVEN_CENTRAL_USERNAME
@@ -91,5 +113,5 @@ curl \
   --show-error \
   --request POST \
   --header "@$header_file" \
-  "https://ossrh-staging-api.central.sonatype.com/manual/upload/defaultRepository/$namespace?publishing_type=user_managed"
-printf '\nArtifacts transferred for user-managed validation in the Maven Central Portal.\n'
+  "https://ossrh-staging-api.central.sonatype.com/manual/upload/defaultRepository/$namespace?publishing_type=$publishing_type"
+printf '\nArtifacts transferred to the Maven Central Portal with publishing type %s.\n' "$publishing_type"

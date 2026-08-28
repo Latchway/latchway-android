@@ -36,6 +36,11 @@ The gate uses `0.1.0` unless `LATCHWAY_PUBLICATION_TEST_VERSION` is set. The
 requested version must match `LATCHWAY_SDK_VERSION`, so a Maven release cannot
 silently report a different runtime SDK version.
 
+`scripts/build-release-artifacts.sh VERSION` runs that gate twice, rejects any
+byte difference between the two Maven repositories, and emits a normalized ZIP
+plus `SHA256SUMS` under `build/release`. Archive tasks disable file timestamps
+and use reproducible entry ordering.
+
 ## Maven Central prerequisites
 
 Maven Central release staging is intentionally a separate, explicit operation.
@@ -111,9 +116,21 @@ plugin](https://central.sonatype.org/publish/publish-portal-gradle/), which is
 why this repository keeps the built-in publication path rather than taking a
 dependency on an unsupported community plugin.
 
-The script does not release artifacts automatically. Inspect the deployment in
-the Publisher Portal, verify all coordinates and signatures, and explicitly
-publish or drop it there. Maven Central versions are immutable.
+The script defaults to `user_managed`, so an operator can inspect the deployment
+in the Publisher Portal and explicitly publish or drop it. The protected tag
+workflow sets `LATCHWAY_CENTRAL_PUBLISHING_TYPE=automatic`; Sonatype then
+publishes only after validation succeeds. The workflow waits for Maven Central,
+downloads every POM, Gradle module, AAR, sources JAR, and Javadoc JAR, validates
+their SHA-256 sidecars and the presence of OpenPGP signatures, and creates the
+GitHub release only after that public-registry proof succeeds. Maven Central
+versions are immutable.
+
+The `maven-central` GitHub environment must protect the four publication
+secrets and require an authorized reviewer. The release tag must be annotated,
+must identify the checked-out commit, and must exactly match the source SDK
+version. `contract.lock` must identify a released core contract, and the
+changelog must contain the matching release section. The workflow also creates
+a GitHub build-provenance attestation for the deterministic repository bundle.
 
 For a release-candidate rehearsal before a tag exists, an authorized release
 operator may set `LATCHWAY_ALLOW_UNTAGGED_RELEASE_FOR_STAGING=true`. The clean

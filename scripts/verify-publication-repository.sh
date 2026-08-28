@@ -22,6 +22,22 @@ fail() {
   exit 1
 }
 
+verify_checksum() {
+  local published_file=$1
+  local algorithm=$2
+  local checksum_file="$published_file.$algorithm"
+  local expected
+  local actual
+  [[ -f "$checksum_file" ]] || fail "missing ${algorithm^^} for ${published_file##*/}"
+  expected=$(tr -d '[:space:]' <"$checksum_file")
+  case "$algorithm" in
+    sha256) actual=$(shasum -a 256 "$published_file" | awk '{print $1}') ;;
+    sha512) actual=$(shasum -a 512 "$published_file" | awk '{print $1}') ;;
+    *) fail "unsupported checksum algorithm $algorithm" ;;
+  esac
+  [[ "$expected" == "$actual" ]] || fail "invalid ${algorithm^^} for ${published_file##*/}"
+}
+
 [[ -d "$group_directory" ]] || fail "missing dev.latchway repository directory"
 
 for module in "${modules[@]}"; do
@@ -52,16 +68,16 @@ for module in "${modules[@]}"; do
     "$artifact_prefix.module" \
     "$artifact_prefix-sources.jar" \
     "$artifact_prefix-javadoc.jar"; do
-    [[ -f "$published_file.sha256" ]] || fail "missing SHA-256 for ${published_file##*/}"
-    [[ -f "$published_file.sha512" ]] || fail "missing SHA-512 for ${published_file##*/}"
+    verify_checksum "$published_file" sha256
+    verify_checksum "$published_file" sha512
   done
   unzip -tqq "$artifact_prefix-sources.jar" || fail "$module sources JAR is corrupt"
   unzip -tqq "$artifact_prefix-javadoc.jar" || fail "$module Javadoc JAR is corrupt"
 
   if [[ "$module" != "latchway-bom" ]]; then
     [[ -f "$artifact_prefix.aar" ]] || fail "missing $module AAR"
-    [[ -f "$artifact_prefix.aar.sha256" ]] || fail "missing SHA-256 for $module AAR"
-    [[ -f "$artifact_prefix.aar.sha512" ]] || fail "missing SHA-512 for $module AAR"
+    verify_checksum "$artifact_prefix.aar" sha256
+    verify_checksum "$artifact_prefix.aar" sha512
     unzip -tqq "$artifact_prefix.aar" || fail "$module AAR is corrupt"
   fi
 done

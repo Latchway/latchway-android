@@ -4,6 +4,7 @@ import org.gradle.api.configuration.BuildFeatures
 import org.gradle.api.publish.PublishingExtension
 import org.gradle.api.publish.maven.MavenPublication
 import org.gradle.api.publish.maven.tasks.PublishToMavenRepository
+import org.gradle.api.tasks.bundling.AbstractArchiveTask
 import org.gradle.api.tasks.Delete
 import org.gradle.authentication.http.BasicAuthentication
 import org.gradle.plugins.signing.Sign
@@ -79,6 +80,11 @@ if (!semanticVersion.matches(releaseVersion)) {
 allprojects {
     group = "dev.latchway"
     version = releaseVersion
+
+    tasks.withType(AbstractArchiveTask::class.java).configureEach {
+        isPreserveFileTimestamps = false
+        isReproducibleFileOrder = true
+    }
 }
 
 val centralPublishingEnabled = providers.gradleProperty("latchway.central.enabled")
