@@ -1,6 +1,6 @@
 {
   "format_version": 1,
-  "contract_version": "0.1.0",
+  "contract_version": "0.2.0",
   "binding_version": 1,
   "canonicalization": "RFC 8785 JCS",
   "hash": "SHA-256",

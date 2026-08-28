@@ -9,7 +9,7 @@ establish device-bound sessions, and authorize ordinary HTTP requests without
 holding an upstream provider credential.
 
 This repository contains the unreleased Android SDK implementation for contract
-0.1.0 and wire protocol 1. Keep `contract.lock`, vendored vectors, runtime
+0.2.0 and wire protocol 1. Keep `contract.lock`, vendored vectors, runtime
 behavior, and documentation aligned to an authoritative core contract bundle.
 Never invent a temporary wire contract or fake production behavior.
 

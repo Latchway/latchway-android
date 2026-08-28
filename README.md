@@ -101,7 +101,7 @@ registry, protocol manifest, canonical attestation binding, DPoP vectors, and
 compatibility rules. This SDK consumes a signed and checksummed contract bundle;
 it does not define an independent wire protocol.
 
-[`contract.lock`](contract.lock) pins contract `0.1.0`, wire protocol `1`, and
+[`contract.lock`](contract.lock) pins contract `0.2.0`, wire protocol `1`, and
 the exact core bundle checksum. Authoritative DPoP and attestation-binding
 fixtures are vendored as test resources. See
 [Architecture](docs/architecture.md) for the dependency and trust boundaries.

@@ -1,6 +1,6 @@
 {
   "format_version": 1,
-  "contract_version": "0.1.0",
+  "contract_version": "0.2.0",
   "wire_protocol_version": 1,
   "reference_time": 1700000030,
   "maximum_iat_skew_seconds": 60,
