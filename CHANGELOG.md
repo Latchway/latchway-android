@@ -9,9 +9,10 @@ Versioning once package publication begins.
 
 ### Changed
 
-- Synchronized the SDK with core contract `0.3.0` while retaining wire
-  protocol `1`; compatibility is declared for server `0.3.0` through the
-  tested `0.3.x` series, and indeterminate-operation errors preserve their
+- Synchronized the SDK with core contract `0.4.0` while retaining wire
+  protocol `1`; compatibility is declared for server `0.4.0` through the
+  tested `0.4.x` series. The server-owned trusted input-accounting contract
+  adds no client wire fields, and indeterminate-operation errors preserve their
   required operation ID.
 - Server-confirmed installation revocation is terminal for that client,
   performs retryable non-cancellable state and DPoP-key cleanup, and prevents

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "manifest_version": 1,
-  "contract_version": "0.3.0",
+  "contract_version": "0.4.0",
   "contract_status": "draft",
   "wire_protocol": {
     "current": 1,
@@ -9,7 +9,7 @@
     "minimum": 1
   },
   "bundle": {
-    "file_name": "latchway-contract-0.3.0.tar.gz",
+    "file_name": "latchway-contract-0.4.0.tar.gz",
     "required_entries": [
       "client.openapi.yaml",
       "admin.openapi.yaml",

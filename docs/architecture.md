@@ -3,7 +3,7 @@
 ## Status
 
 This document describes the unreleased `0.1.0-SNAPSHOT` implementation locked
-to contract `0.3.0` and wire protocol `1`. Public APIs remain handwritten; the
+to contract `0.4.0` and wire protocol `1`. Public APIs remain handwritten; the
 internal JSON boundary is validated directly against the core schemas and
 shared fixtures.
 

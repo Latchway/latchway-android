@@ -103,7 +103,7 @@ every network attempt and blocks DPoP and Latchway headers before OkHttp can
 follow a redirect to another origin; final cross-origin responses are never
 trusted for destructive revocation cleanup even if the guard is omitted.
 Canonical HTTP 403 `installation_revoked` responses are observed without
-replaying the request and trigger terminal local cleanup. Contract 0.3.0
+replaying the request and trigger terminal local cleanup. Contract 0.4.0
 `operation_indeterminate` exceptions retain their required `operationId` for
 operator reconciliation.
 
@@ -114,9 +114,9 @@ registry, protocol manifest, canonical attestation binding, DPoP vectors, and
 compatibility rules. This SDK consumes a signed and checksummed contract bundle;
 it does not define an independent wire protocol.
 
-[`contract.lock`](contract.lock) pins contract `0.3.0`, wire protocol `1`, the
+[`contract.lock`](contract.lock) pins contract `0.4.0`, wire protocol `1`, the
 exact core checkpoint and bundle checksum, and server compatibility from
-`0.3.0` through the tested `0.3.x` series. The authoritative protocol manifest,
+`0.4.0` through the tested `0.4.x` series. The authoritative protocol manifest,
 DPoP vectors, and attestation-binding vectors are vendored as test resources. See
 [Architecture](docs/architecture.md) for the dependency and trust boundaries.
 
