@@ -49,3 +49,15 @@ Versioning once package publication begins.
   contract vectors, integration samples, and real Play-track conformance app.
 - Explicit React Native Android wire identity that reuses native security while
   isolating its key and encrypted state namespace.
+- Maven Central-compatible publications for the four public libraries and
+  aligned BOM, including source/Javadoc artifacts, complete POM metadata,
+  in-memory OpenPGP signing, and an explicit user-managed Central staging path.
+- An isolated local Maven publication gate and independent offline Android
+  consumer that resolves all public artifacts through the BOM, plus CI coverage
+  that retains the verified repository as a test artifact.
+
+### Security
+
+- Remote publication is absent unless explicitly enabled, Central secrets are
+  read from environment or user-home properties only, and signing is rejected
+  while configuration caching could persist credentials or key material.

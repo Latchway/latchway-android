@@ -1,5 +1,7 @@
 plugins {
     alias(libs.plugins.android.library)
+    `maven-publish`
+    signing
 }
 
 android {
@@ -18,6 +20,13 @@ android {
 
     testOptions {
         unitTests.isReturnDefaultValues = false
+    }
+
+    publishing {
+        singleVariant("release") {
+            withSourcesJar()
+            withJavadocJar()
+        }
     }
 }
 

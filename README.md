@@ -19,8 +19,8 @@ client boundary.
   server `client_data_hash`/Play `requestHash` binding
 - `latchway-firebase-auth`: optional Firebase ID-token adapter
 - `latchway-bom`: aligned Latchway module versions
-- `test-support`: explicit debug evidence, memory state, scripted transport,
-  and software signer doubles for tests only
+- `test-support`: repository-only debug evidence, memory state, scripted
+  transport, and software signer doubles; it is not a public Maven coordinate
 - `sample-basic`, `sample-firebase`, and `sample-conformance`: integration and
   Play-track validation applications
 
@@ -29,6 +29,22 @@ Gradle 9.5.0, Kotlin 2.3.21, Java 17 bytecode, OkHttp 5.3.0, Play Integrity
 1.6.0, and the Firebase 34.18.0 BOM.
 
 ## Usage
+
+After a release is available from Maven Central, align the SDK modules with the
+BOM and add only the adapters the application uses:
+
+```kotlin
+dependencies {
+    implementation(platform("dev.latchway:latchway-bom:0.1.0"))
+    implementation("dev.latchway:latchway-okhttp")
+    implementation("dev.latchway:latchway-play-integrity")
+    implementation("dev.latchway:latchway-firebase-auth") // optional
+}
+```
+
+The adapter publications carry `latchway-core` transitively. Applications may
+also depend on `dev.latchway:latchway-core` directly when implementing another
+transport integration.
 
 The public API keeps the application's existing identity provider and HTTP
 stack:
@@ -170,6 +186,17 @@ activity uses real Play evidence only and cancellation closes an in-flight
 streamed call.
 
 See [Contributing](CONTRIBUTING.md) and [Agent Instructions](AGENTS.md).
+
+## Publication
+
+Every public module has Maven Central-compatible POM metadata, Gradle module
+metadata, a source JAR, a Javadoc JAR, and an opt-in in-memory OpenPGP signing
+path. Remote publication is not configured during ordinary builds. Run
+`./scripts/verify-local-publication.sh` to publish all five coordinates to an
+isolated local repository and compile independent offline Android consumers
+through both Gradle module metadata and Maven POM metadata.
+See [Publishing](docs/publishing.md) for the credential-safe, user-managed
+Central staging procedure and its external namespace/signing prerequisites.
 
 ## License
 

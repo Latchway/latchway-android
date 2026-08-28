@@ -1,9 +1,8 @@
 # Contributing to Latchway Android SDK
 
-Thank you for helping build Latchway. This repository is currently establishing
-its governance and protocol boundary. It intentionally has no Gradle project or
-contract lock until the core repository publishes the first authoritative
-contract bundle.
+Thank you for helping build Latchway. This repository consumes an exact core
+contract bundle and keeps its Gradle modules, public API, tests, and release
+metadata aligned with that authority.
 
 ## Before making a change
 
@@ -35,8 +34,10 @@ protocol work also requires shared-vector, device-capability, and conformance
 coverage. Refresh concurrency, cancellation, redaction, encrypted persistence,
 and retry safety must be tested explicitly.
 
-Canonical wrapper commands will be documented when the Gradle project and CI
-are introduced. A contribution is not ready while its documented checks fail.
+Run `./gradlew test assemble lint` for every change. Publication changes must
+also pass `./scripts/verify-local-publication.sh`, which compiles an independent
+consumer against only the generated Maven repository. A contribution is not
+ready while any documented check fails.
 
 ## Pull requests
 

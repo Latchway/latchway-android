@@ -1,5 +1,7 @@
 plugins {
     alias(libs.plugins.android.library)
+    `maven-publish`
+    signing
 }
 
 android {
@@ -10,12 +12,18 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+    publishing {
+        singleVariant("release") {
+            withSourcesJar()
+            withJavadocJar()
+        }
+    }
 }
 
 dependencies {
     api(project(":latchway-core"))
-    implementation(platform(libs.firebase.bom))
-    implementation(libs.firebase.auth)
+    api(platform(libs.firebase.bom))
+    api(libs.firebase.auth)
     implementation(libs.coroutines.play.services)
     testImplementation(libs.junit)
     testImplementation(libs.coroutines.core)
