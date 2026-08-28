@@ -1,5 +1,7 @@
 package dev.latchway.okhttp
 
+import dev.latchway.core.LatchwayErrorCode
+import dev.latchway.core.LatchwayException
 import okhttp3.MediaType
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Protocol
@@ -11,6 +13,7 @@ import okio.BufferedSink
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotSame
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -136,6 +139,60 @@ class AuthenticatorPolicyTest {
             null,
             response("session_expired", httpStatus = 403, problemStatus = 403).problemCode(),
         )
+    }
+
+    @Test
+    fun exactCredentialHeadersAreRejectedWhileAuthorizationCanBeReplaced() {
+        val target = "https://gateway.example.test/v1/responses"
+        for (name in (FORBIDDEN_CALLER_CREDENTIAL_NAMES - "authorization") + "cookie") {
+            val request = Request.Builder()
+                .url(target)
+                .header(name.uppercase(), "provider-secret")
+                .build()
+
+            val error = assertThrows(LatchwayException::class.java) {
+                rejectUpstreamCredentials(request, authorizationWillBeReplaced = true)
+            }
+
+            assertEquals(LatchwayErrorCode.REQUEST_INVALID, error.code)
+            assertFalse(error.message.orEmpty().contains("provider-secret"))
+        }
+
+        val placeholderAuthorization = Request.Builder()
+            .url(target)
+            .header("Authorization", "Bearer caller-placeholder")
+            .build()
+        rejectUpstreamCredentials(placeholderAuthorization, authorizationWillBeReplaced = true)
+
+        assertThrows(LatchwayException::class.java) {
+            rejectUpstreamCredentials(placeholderAuthorization, authorizationWillBeReplaced = false)
+        }
+    }
+
+    @Test
+    fun exactCredentialQueryNamesAreRejectedCaseInsensitivelyAfterDecoding() {
+        for (name in FORBIDDEN_CALLER_CREDENTIAL_NAMES) {
+            val request = Request.Builder()
+                .url("https://gateway.example.test/v1/responses?${name.uppercase()}=provider-secret")
+                .build()
+
+            assertThrows(LatchwayException::class.java) {
+                rejectUpstreamCredentials(request, authorizationWillBeReplaced = true)
+            }
+        }
+
+        val encoded = Request.Builder()
+            .url("https://gateway.example.test/v1/responses?api%5Fkey=provider-secret")
+            .build()
+        assertThrows(LatchwayException::class.java) {
+            rejectUpstreamCredentials(encoded, authorizationWillBeReplaced = true)
+        }
+
+        val ordinary = Request.Builder()
+            .url("https://gateway.example.test/v1/responses?model=gpt-5&stream=true&cookie=enabled")
+            .header("X-Application-Metadata", "safe")
+            .build()
+        rejectUpstreamCredentials(ordinary, authorizationWillBeReplaced = true)
     }
 
     private fun response(

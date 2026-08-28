@@ -13,7 +13,10 @@ import kotlinx.coroutines.withTimeout
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import okhttp3.Call
+import okhttp3.Cookie
+import okhttp3.CookieJar
 import okhttp3.EventListener
+import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Response
 import okhttp3.Request
@@ -62,6 +65,107 @@ class OkHttpLatchwayTransportTest {
             client.dispatcher.executorService.shutdown()
             gateway.close()
             redirectTarget.close()
+        }
+    }
+
+    @Test
+    fun originGuardRejectsCookieJarCredentialsBeforeGatewayDispatch() {
+        val gateway = MockWebServer()
+        gateway.start()
+        val client = OkHttpClient.Builder()
+            .cookieJar(object : CookieJar {
+                override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) = Unit
+
+                override fun loadForRequest(url: HttpUrl): List<Cookie> = listOf(
+                    Cookie.Builder()
+                        .hostOnlyDomain(url.host)
+                        .name("api_key")
+                        .value("provider-secret")
+                        .build(),
+                )
+            })
+            .addNetworkInterceptor(gatewayOriginGuard(gateway.url("/")))
+            .build()
+
+        try {
+            val error = assertThrows(LatchwayException::class.java) {
+                client.newCall(
+                    Request.Builder()
+                        .url(gateway.url("/v1/responses"))
+                        .header("Authorization", "DPoP access-token")
+                        .header("DPoP", "signed-proof")
+                        .build(),
+                ).execute().use { }
+            }
+
+            assertEquals(LatchwayErrorCode.REQUEST_INVALID, error.code)
+            assertEquals(0, gateway.requestCount)
+        } finally {
+            client.dispatcher.cancelAll()
+            client.connectionPool.evictAll()
+            client.dispatcher.executorService.shutdown()
+            gateway.close()
+        }
+    }
+
+    @Test
+    fun originGuardRejectsProxyCredentialAddedByALaterInterceptorBeforeDispatch() {
+        val gateway = MockWebServer()
+        gateway.start()
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                chain.proceed(
+                    chain.request().newBuilder()
+                        .header("Proxy-Authorization", "Basic provider-secret")
+                        .build(),
+                )
+            }
+            .addNetworkInterceptor(gatewayOriginGuard(gateway.url("/")))
+            .build()
+
+        try {
+            val error = assertThrows(LatchwayException::class.java) {
+                client.newCall(Request.Builder().url(gateway.url("/v1/responses")).build())
+                    .execute()
+                    .use { }
+            }
+
+            assertEquals(LatchwayErrorCode.REQUEST_INVALID, error.code)
+            assertEquals(0, gateway.requestCount)
+        } finally {
+            client.dispatcher.cancelAll()
+            client.connectionPool.evictAll()
+            client.dispatcher.executorService.shutdown()
+            gateway.close()
+        }
+    }
+
+    @Test
+    fun originGuardRejectsCredentialQueryBeforeGatewayDispatch() {
+        val gateway = MockWebServer()
+        gateway.start()
+        val client = OkHttpClient.Builder()
+            .addNetworkInterceptor(gatewayOriginGuard(gateway.url("/")))
+            .build()
+
+        try {
+            val error = assertThrows(LatchwayException::class.java) {
+                client.newCall(
+                    Request.Builder()
+                        .url(gateway.url("/v1/responses?Api_Key=provider-secret"))
+                        .header("Authorization", "DPoP access-token")
+                        .header("DPoP", "signed-proof")
+                        .build(),
+                ).execute().use { }
+            }
+
+            assertEquals(LatchwayErrorCode.REQUEST_INVALID, error.code)
+            assertEquals(0, gateway.requestCount)
+        } finally {
+            client.dispatcher.cancelAll()
+            client.connectionPool.evictAll()
+            client.dispatcher.executorService.shutdown()
+            gateway.close()
         }
     }
 

@@ -27,6 +27,11 @@ Versioning once package publication begins.
   explicit non-secret model value.
 - OkHttp runtime helpers remain compatible with API 23 and avoid retaining a
   strong static Android context.
+- Gateway requests reject recognized caller-supplied provider credentials in
+  headers, cookies, and query parameters before dispatch while replacing a
+  caller Authorization header with Latchway DPoP authorization.
+- Play Integrity challenges require a canonical server cloud project number
+  that exactly matches the configured project before a token is requested.
 
 ### Added
 

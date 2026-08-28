@@ -101,12 +101,48 @@ class PlayIntegrityAttestationProviderTest {
         assertEquals(1, gateway.requestHashes.size)
     }
 
-    private fun challenge(): AttestationChallenge = AttestationChallenge(
+    @Test
+    fun cloudProjectNumberMustBeCanonicalAndMatchBeforePlayIsCalled() {
+        val invalidOptions = listOf(
+            emptyMap(),
+            mapOf("cloud_project_number" to null),
+            mapOf("cloud_project_number" to 123_456_789L),
+            mapOf("cloud_project_number" to 123_456_789.0),
+            mapOf("cloud_project_number" to ""),
+            mapOf("cloud_project_number" to " 123456789"),
+            mapOf("cloud_project_number" to "+123456789"),
+            mapOf("cloud_project_number" to "0123456789"),
+            mapOf("cloud_project_number" to "0"),
+            mapOf("cloud_project_number" to "-123456789"),
+            mapOf("cloud_project_number" to "9223372036854775808"),
+            mapOf("cloud_project_number" to "123456788"),
+        )
+
+        for (options in invalidOptions) {
+            val gateway = RecordingGateway()
+            val provider = PlayIntegrityAttestationProvider.forTesting(
+                gateway = gateway,
+                cloudProjectNumber = 123_456_789L,
+            )
+
+            val error = assertThrows(LatchwayException::class.java) {
+                runBlocking { provider.attest(challenge(options)) }
+            }
+
+            assertEquals(LatchwayErrorCode.ATTESTATION_INVALID, error.code)
+            assertEquals(0, gateway.prepareCount)
+            assertTrue(gateway.requestHashes.isEmpty())
+        }
+    }
+
+    private fun challenge(
+        providerOptions: Map<String, Any?> = mapOf("cloud_project_number" to "123456789"),
+    ): AttestationChallenge = AttestationChallenge(
         challengeId = "chl_01J00000000000000000000001",
         provider = "play_integrity",
         mode = AttestationMode.REQUIRED,
         clientDataHash = clientDataHash,
-        providerOptions = emptyMap(),
+        providerOptions = providerOptions,
     )
 
     private class RecordingGateway(

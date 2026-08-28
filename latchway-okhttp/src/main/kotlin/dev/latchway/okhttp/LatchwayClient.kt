@@ -42,6 +42,7 @@ import java.io.Closeable
 import java.lang.ref.WeakReference
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
+import java.util.Locale
 
 public data class LatchwayConfiguration(
     val baseUrl: HttpUrl,
@@ -101,8 +102,8 @@ public class LatchwayClient(
     }
 
     /**
-     * Install as a network interceptor. It blocks Latchway credentials from
-     * following an automatic redirect to a different origin.
+     * Install as a network interceptor. It blocks caller provider credentials
+     * before gateway dispatch and Latchway credentials on cross-origin redirects.
      */
     public fun originGuard(): Interceptor = gatewayOriginGuard(configuration.baseUrl)
 
@@ -167,6 +168,7 @@ public class LatchwayClient(
                 safeMessage = "Latchway credentials can only be attached to the configured gateway origin",
             )
         }
+        rejectUpstreamCredentials(request, authorizationWillBeReplaced = true)
         val authorized = core.authorize(request.method, request.url.toUri(), feature, nonce)
         return request.newBuilder()
             .header("Authorization", authorized.authorizationHeader())
@@ -379,14 +381,82 @@ internal fun observeInstallationRevocation(
 
 internal fun gatewayOriginGuard(gatewayOrigin: HttpUrl): Interceptor = Interceptor { chain ->
     val request = chain.request()
-    if (request.hasLatchwayCredentials() && !request.url.hasSameOrigin(gatewayOrigin)) {
+    val isGatewayOrigin = request.url.hasSameOrigin(gatewayOrigin)
+    if (!isGatewayOrigin &&
+        (request.hasLatchwayCredentials() || request.tag(AuthorizedHeaders::class.java) != null)
+    ) {
         throw LatchwayException(
             code = LatchwayErrorCode.CONFIGURATION_INVALID,
             safeMessage = "Latchway credentials cannot follow a redirect to another origin",
         )
     }
+    if (isGatewayOrigin) {
+        rejectUpstreamCredentials(request, authorizationWillBeReplaced = false)
+    }
     chain.proceed(request)
 }
+
+internal val FORBIDDEN_CALLER_CREDENTIAL_NAMES: Set<String> = setOf(
+    "authorization",
+    "proxy-authorization",
+    "api-key",
+    "api_key",
+    "apikey",
+    "x-api-key",
+    "openai-api-key",
+    "openai_api_key",
+    "x-openai-api-key",
+    "anthropic-api-key",
+    "anthropic_api_key",
+    "x-goog-api-key",
+    "x-goog-api_key",
+    "access_token",
+    "token",
+    "key",
+)
+
+internal fun rejectUpstreamCredentials(
+    request: Request,
+    authorizationWillBeReplaced: Boolean,
+) {
+    val hasForbiddenHeader = request.headers.names().any { name ->
+        val normalized = name.lowercase(Locale.US)
+        if (normalized == "cookie") {
+            true
+        } else if (normalized !in FORBIDDEN_CALLER_CREDENTIAL_NAMES) {
+            false
+        } else if (normalized == "authorization") {
+            !authorizationWillBeReplaced && !request.hasLatchwayAuthorization()
+        } else {
+            true
+        }
+    }
+    if (hasForbiddenHeader) throw upstreamCredentialError()
+
+    if (request.url.queryParameterNames.any {
+            it.lowercase(Locale.US) in FORBIDDEN_CALLER_CREDENTIAL_NAMES
+        }
+    ) {
+        throw upstreamCredentialError()
+    }
+}
+
+private fun Request.hasLatchwayAuthorization(): Boolean {
+    val values = headers.values("Authorization")
+    if (values.size != 1) return false
+    val value = values.single()
+    val authorized = tag(AuthorizedHeaders::class.java)
+    return if (authorized != null) {
+        value == authorized.authorizationHeader()
+    } else {
+        value.startsWith("DPoP ") && value.length > 5
+    }
+}
+
+private fun upstreamCredentialError(): LatchwayException = LatchwayException(
+    code = LatchwayErrorCode.REQUEST_INVALID,
+    safeMessage = "Upstream provider credentials must not be supplied to Latchway",
+)
 
 private fun Request.hasLatchwayCredentials(): Boolean =
     header("DPoP") != null || header("Authorization")?.startsWith("DPoP ") == true ||

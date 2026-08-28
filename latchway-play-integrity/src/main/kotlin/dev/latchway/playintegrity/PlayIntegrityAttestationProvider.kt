@@ -31,10 +31,12 @@ public data class PlayIntegrityRetryPolicy(
 
 /**
  * Google Play Integrity Standard provider. The 43-character server hash is passed to
- * Play as requestHash verbatim; hashing it again would break the protocol binding.
+ * Play as requestHash verbatim; hashing it again would break the protocol binding. The
+ * server cloud project option must exactly match the project configured by the caller.
  */
 public class PlayIntegrityAttestationProvider private constructor(
     private val gateway: StandardIntegrityGateway,
+    private val cloudProjectNumber: Long,
     private val retryPolicy: PlayIntegrityRetryPolicy,
     private val sleeper: suspend (Long) -> Unit,
 ) : AttestationProvider {
@@ -44,9 +46,12 @@ public class PlayIntegrityAttestationProvider private constructor(
         retryPolicy: PlayIntegrityRetryPolicy = PlayIntegrityRetryPolicy(),
     ) : this(
         gateway = GoogleStandardIntegrityGateway(context.applicationContext, cloudProjectNumber),
+        cloudProjectNumber = cloudProjectNumber,
         retryPolicy = retryPolicy,
         sleeper = { delay(it) },
-    ) {
+    )
+
+    init {
         require(cloudProjectNumber > 0) { "cloudProjectNumber must be positive" }
     }
 
@@ -69,6 +74,7 @@ public class PlayIntegrityAttestationProvider private constructor(
                 safeMessage = "The server supplied an invalid Play Integrity request hash",
             )
         }
+        requireMatchingCloudProjectNumber(challenge.providerOptions)
         warmUp()
         val token = runWithRetry(allowProviderRenewal = true) {
             gateway.request(challenge.clientDataHash)
@@ -83,6 +89,22 @@ public class PlayIntegrityAttestationProvider private constructor(
             provider = PROVIDER,
             evidence = mapOf("integrity_token" to token),
         )
+    }
+
+    private fun requireMatchingCloudProjectNumber(providerOptions: Map<String, Any?>) {
+        val rawProjectNumber = providerOptions["cloud_project_number"] as? String
+        val parsedProjectNumber = rawProjectNumber
+            ?.takeIf(CLOUD_PROJECT_NUMBER::matches)
+            ?.toLongOrNull()
+        if (parsedProjectNumber == null ||
+            parsedProjectNumber != cloudProjectNumber ||
+            rawProjectNumber != parsedProjectNumber.toString()
+        ) {
+            throw LatchwayException(
+                code = LatchwayErrorCode.ATTESTATION_INVALID,
+                safeMessage = "The server supplied an invalid Play Integrity cloud project",
+            )
+        }
     }
 
     private suspend fun <T> runWithRetry(
@@ -129,12 +151,19 @@ public class PlayIntegrityAttestationProvider private constructor(
     internal companion object {
         const val PROVIDER = "play_integrity"
         val CLIENT_DATA_HASH = Regex("^[A-Za-z0-9_-]{43}$")
+        val CLOUD_PROJECT_NUMBER = Regex("^[1-9][0-9]{0,18}$")
 
         fun forTesting(
             gateway: StandardIntegrityGateway,
+            cloudProjectNumber: Long = 123_456_789L,
             retryPolicy: PlayIntegrityRetryPolicy = PlayIntegrityRetryPolicy(),
             sleeper: suspend (Long) -> Unit = {},
-        ): PlayIntegrityAttestationProvider = PlayIntegrityAttestationProvider(gateway, retryPolicy, sleeper)
+        ): PlayIntegrityAttestationProvider = PlayIntegrityAttestationProvider(
+            gateway,
+            cloudProjectNumber,
+            retryPolicy,
+            sleeper,
+        )
     }
 }
 

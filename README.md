@@ -85,10 +85,14 @@ their key and report replacement-key liveness during terminal revocation.
 - Produce RFC 9449 DPoP proofs
 - Pass the server-provided 43-character `client_data_hash` directly to Play
   Integrity as `requestHash`; it is never reconstructed or hashed again
+- Require the challenge's canonical `cloud_project_number` to match the
+  configured Play cloud project before requesting an integrity token
 - Exchange an existing application identity token for short-lived,
   device-bound Latchway sessions
 - Provide direct request authorization plus safe OkHttp interceptor and
   authenticator integrations
+- Replace caller Authorization with Latchway DPoP authorization and reject
+  recognized provider credentials in headers, cookies, and query parameters
 - Encrypt persisted refresh state and prevent refresh stampedes
 - Make successful installation revocation terminal for that client, clear its
   session state, and delete its DPoP key so a new client provisions a fresh JKT
@@ -100,8 +104,10 @@ permits one nonce/session follow-up, and rejects one-shot or duplex bodies.
 Application streaming responses are not buffered by the SDK.
 Install `originGuard()` as a network interceptor with `interceptor()`. It sees
 every network attempt and blocks DPoP and Latchway headers before OkHttp can
-follow a redirect to another origin; final cross-origin responses are never
-trusted for destructive revocation cleanup even if the guard is omitted.
+follow a redirect to another origin. It also catches credentials added after
+authorization by an application interceptor or cookie jar before dispatch;
+final cross-origin responses are never trusted for destructive revocation
+cleanup even if the guard is omitted.
 Canonical HTTP 403 `installation_revoked` responses are observed without
 replaying the request and trigger terminal local cleanup. Contract 0.4.0
 `operation_indeterminate` exceptions retain their required `operationId` for
