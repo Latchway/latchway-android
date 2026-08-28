@@ -23,17 +23,11 @@ public class OkHttpLatchwayTransport(
 ) : LatchwayTransport {
     override suspend fun execute(request: LatchwayTransportRequest): LatchwayTransportResponse {
         val builder = Request.Builder().url(request.uri.toURL())
-        request.headers.forEach(builder::header)
+        for ((name, value) in request.headers) builder.header(name, value)
         val body = request.body?.toRequestBody(JSON)
         builder.method(request.method, body)
         return try {
-            client.newCall(builder.build()).await().use { response ->
-                LatchwayTransportResponse(
-                    statusCode = response.code,
-                    headers = response.headers.toMultimap(),
-                    body = response.body.byteStream().use(::readBounded),
-                )
-            }
+            client.newCall(builder.build()).awaitBoundedResponse()
         } catch (error: LatchwayException) {
             throw error
         } catch (error: IOException) {
@@ -45,6 +39,36 @@ public class OkHttpLatchwayTransport(
             )
         }
     }
+
+    /**
+     * Keep the cancellable continuation attached until the response body has
+     * been drained. Cancelling the coroutine therefore closes a stalled call
+     * even after response headers have arrived.
+     */
+    private suspend fun Call.awaitBoundedResponse(): LatchwayTransportResponse =
+        suspendCancellableCoroutine { continuation ->
+            continuation.invokeOnCancellation { cancel() }
+            enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    if (continuation.isActive) continuation.resumeWithException(e)
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    try {
+                        val result = response.use {
+                            LatchwayTransportResponse(
+                                statusCode = it.code,
+                                headers = it.headers.toMultimap(),
+                                body = it.body.byteStream().use(::readBounded),
+                            )
+                        }
+                        if (continuation.isActive) continuation.resume(result)
+                    } catch (error: Exception) {
+                        if (continuation.isActive) continuation.resumeWithException(error)
+                    }
+                }
+            })
+        }
 
     private companion object {
         const val MAX_RESPONSE_BYTES = 512 * 1024
@@ -69,17 +93,4 @@ public class OkHttpLatchwayTransport(
             return output.toByteArray()
         }
     }
-}
-
-private suspend fun Call.await(): Response = suspendCancellableCoroutine { continuation ->
-    continuation.invokeOnCancellation { cancel() }
-    enqueue(object : Callback {
-        override fun onFailure(call: Call, e: IOException) {
-            if (continuation.isActive) continuation.resumeWithException(e)
-        }
-
-        override fun onResponse(call: Call, response: Response) {
-            if (continuation.isActive) continuation.resume(response) else response.close()
-        }
-    })
 }

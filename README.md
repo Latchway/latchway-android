@@ -51,6 +51,7 @@ val latchway = LatchwayClient(
 
 val http = OkHttpClient.Builder()
     .addInterceptor(latchway.interceptor())
+    .addNetworkInterceptor(latchway.originGuard())
     .authenticator(latchway.authenticator())
     .build()
 ```
@@ -73,6 +74,8 @@ protocol credentials out of JavaScript.
 `allowSoftwareBacked = true` only for an explicit environment policy such as a
 development emulator. Diagnostics distinguish StrongBox, TEE, software, and
 older-platform secure hardware whose exact class Android cannot report.
+Custom core signers can implement `ResettableInstallationSigner` to destroy
+their key and report replacement-key liveness during terminal revocation.
 
 ## Security behavior
 
@@ -87,12 +90,22 @@ older-platform secure hardware whose exact class Android cannot report.
 - Provide direct request authorization plus safe OkHttp interceptor and
   authenticator integrations
 - Encrypt persisted refresh state and prevent refresh stampedes
+- Make successful installation revocation terminal for that client, clear its
+  session state, and delete its DPoP key so a new client provisions a fresh JKT
 - Expose quota, installation-revocation, and redacted diagnostic APIs
 - Keep Firebase and Play Integrity dependencies outside the core module
 
 The authenticator only handles a bounded set of pre-dispatch Latchway failures,
 permits one nonce/session follow-up, and rejects one-shot or duplex bodies.
 Application streaming responses are not buffered by the SDK.
+Install `originGuard()` as a network interceptor with `interceptor()`. It sees
+every network attempt and blocks DPoP and Latchway headers before OkHttp can
+follow a redirect to another origin; final cross-origin responses are never
+trusted for destructive revocation cleanup even if the guard is omitted.
+Canonical HTTP 403 `installation_revoked` responses are observed without
+replaying the request and trigger terminal local cleanup. Contract 0.3.0
+`operation_indeterminate` exceptions retain their required `operationId` for
+operator reconciliation.
 
 ## Protocol ownership
 
@@ -101,9 +114,10 @@ registry, protocol manifest, canonical attestation binding, DPoP vectors, and
 compatibility rules. This SDK consumes a signed and checksummed contract bundle;
 it does not define an independent wire protocol.
 
-[`contract.lock`](contract.lock) pins contract `0.2.0`, wire protocol `1`, and
-the exact core bundle checksum. Authoritative DPoP and attestation-binding
-fixtures are vendored as test resources. See
+[`contract.lock`](contract.lock) pins contract `0.3.0`, wire protocol `1`, the
+exact core checkpoint and bundle checksum, and server compatibility from
+`0.3.0` through the tested `0.3.x` series. The authoritative protocol manifest,
+DPoP vectors, and attestation-binding vectors are vendored as test resources. See
 [Architecture](docs/architecture.md) for the dependency and trust boundaries.
 
 ## Security model
@@ -139,6 +153,7 @@ latchway.gatewayUrl=https://gateway.example.com/
 latchway.applicationId=app_example
 latchway.environment=production
 latchway.feature=assistant
+latchway.model=assistant-default
 latchway.cloudProjectNumber=123456789012
 ```
 

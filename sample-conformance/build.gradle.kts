@@ -15,6 +15,7 @@ android {
         manifestPlaceholders["latchwayApplicationId"] = providers.gradleProperty("latchway.applicationId").orElse("").get()
         manifestPlaceholders["latchwayEnvironment"] = providers.gradleProperty("latchway.environment").orElse("").get()
         manifestPlaceholders["latchwayFeature"] = providers.gradleProperty("latchway.feature").orElse("").get()
+        manifestPlaceholders["latchwayModel"] = providers.gradleProperty("latchway.model").orElse("").get()
         manifestPlaceholders["latchwayCloudProjectNumber"] = providers.gradleProperty("latchway.cloudProjectNumber").orElse("0").get()
     }
     compileOptions {
@@ -30,4 +31,5 @@ dependencies {
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.auth)
     implementation(libs.coroutines.android)
+    testImplementation(libs.junit)
 }

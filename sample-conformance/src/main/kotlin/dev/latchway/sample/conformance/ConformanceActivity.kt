@@ -28,7 +28,10 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.IOException
+import java.nio.charset.StandardCharsets
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -80,15 +83,27 @@ public class ConformanceActivity : Activity() {
             )
             latchway.use {
                 val request = Request.Builder()
-                    .url(values.gateway.resolve("/v1/responses") ?: error("Invalid gateway URL"))
+                    .url(values.gateway.resolve("/v1/chat/completions") ?: error("Invalid gateway URL"))
                     .latchwayFeature(values.feature)
                     .post(
-                        """{"input":"Return the word conformance.","stream":true}"""
+                        JSONObject()
+                            .put("model", values.model)
+                            .put(
+                                "messages",
+                                JSONArray().put(
+                                    JSONObject()
+                                        .put("role", "user")
+                                        .put("content", "Return the word conformance."),
+                                ),
+                            )
+                            .put("stream", true)
+                            .toString()
                             .toRequestBody("application/json".toMediaType()),
                     )
                     .build()
                 val httpClient = OkHttpClient.Builder()
                     .addInterceptor(latchway.interceptor())
+                    .addNetworkInterceptor(latchway.originGuard())
                     .authenticator(latchway.authenticator())
                     .build()
                 try {
@@ -122,9 +137,10 @@ public class ConformanceActivity : Activity() {
             ?.takeIf { IDENTIFIER.matches(it) } ?: return null
         val feature = metadata.getString("dev.latchway.FEATURE")?.takeIf { IDENTIFIER.matches(it) }
             ?: return null
+        val model = metadata.getString("dev.latchway.MODEL")?.takeIf(::isValidModel) ?: return null
         val projectNumber = metadata.getString("dev.latchway.CLOUD_PROJECT_NUMBER")?.toLongOrNull()
             ?.takeIf { it > 0 } ?: return null
-        return Values(gateway, applicationId, environment, feature, projectNumber)
+        return Values(gateway, applicationId, environment, feature, model, projectNumber)
     }
 
     private data class Values(
@@ -132,6 +148,7 @@ public class ConformanceActivity : Activity() {
         val applicationId: String,
         val environment: String,
         val feature: String,
+        val model: String,
         val cloudProjectNumber: Long,
     )
 
@@ -139,6 +156,10 @@ public class ConformanceActivity : Activity() {
         val IDENTIFIER = Regex("^[a-z][a-z0-9_-]{0,62}$")
     }
 }
+
+internal fun isValidModel(value: String): Boolean =
+    value.isNotEmpty() && value.toByteArray(StandardCharsets.UTF_8).size <= 256 &&
+        value.trim() == value && value.none { it.isISOControl() }
 
 private suspend fun Call.awaitFirstStreamByte(): Unit = suspendCancellableCoroutine { continuation ->
     continuation.invokeOnCancellation { cancel() }

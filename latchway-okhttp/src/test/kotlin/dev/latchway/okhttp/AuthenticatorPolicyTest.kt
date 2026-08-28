@@ -40,6 +40,10 @@ class AuthenticatorPolicyTest {
         val duplex = response("dpop_nonce_required", body = PolicyBody(duplex = true), nonce = VALID_NONCE)
         assertEquals(AuthenticationAction.NONE, authenticationDecision(oneShot).action)
         assertEquals(AuthenticationAction.NONE, authenticationDecision(duplex).action)
+        assertEquals(
+            AuthenticationAction.NONE,
+            authenticationDecision(response("installation_revoked", body = PolicyBody(oneShot = true))).action,
+        )
     }
 
     @Test
@@ -80,7 +84,7 @@ class AuthenticatorPolicyTest {
     }
 
     @Test
-    fun onlyPreDispatchSessionFailuresRefreshAndRevocationsClear() {
+    fun onlyPreDispatch401SessionFailuresReachTheAuthenticator() {
         assertEquals(
             AuthenticationAction.REFRESH,
             authenticationDecision(response("session_expired")).action,
@@ -95,7 +99,42 @@ class AuthenticatorPolicyTest {
         )
         assertEquals(
             AuthenticationAction.CLEAR,
+            authenticationDecision(response("session_revoked")).action,
+        )
+        assertEquals(
+            AuthenticationAction.NONE,
             authenticationDecision(response("installation_revoked")).action,
+        )
+    }
+
+    @Test
+    fun interceptorObservationTerminalizesOnlyCanonical403InstallationRevocation() {
+        var revocations = 0
+        val revoked = response("installation_revoked")
+
+        observeInstallationRevocation(revoked, { it.host == "gateway.example.test" }) { revocations++ }
+
+        assertEquals(1, revocations)
+        assertTrue(revoked.body.string().contains("installation_revoked"))
+
+        observeInstallationRevocation(
+            response("installation_revoked", httpStatus = 401, problemStatus = 401),
+            { it.host == "gateway.example.test" },
+        ) { revocations++ }
+        assertEquals(1, revocations)
+
+        observeInstallationRevocation(
+            response("installation_revoked", url = "https://redirect.example.test/final"),
+            { it.host == "gateway.example.test" },
+        ) { revocations++ }
+        assertEquals(1, revocations)
+        assertEquals(
+            null,
+            response("feature_not_allowed", httpStatus = 403, problemStatus = 403).problemCode(),
+        )
+        assertEquals(
+            null,
+            response("session_expired", httpStatus = 403, problemStatus = 403).problemCode(),
         )
     }
 
@@ -105,21 +144,23 @@ class AuthenticatorPolicyTest {
         nonce: String? = null,
         mediaType: String = "application/problem+json",
         requestIdHeader: String? = "req_12345678",
-        problemStatus: Int = 401,
+        httpStatus: Int = if (code == "installation_revoked") 403 else 401,
+        problemStatus: Int = httpStatus,
+        url: String = "https://gateway.example.test/v1/responses",
     ): Response {
         val request = Request.Builder()
-            .url("https://gateway.example.test/v1/responses")
+            .url(url)
             .method(if (body == null) "GET" else "POST", body)
             .build()
         return Response.Builder()
             .request(request)
             .protocol(Protocol.HTTP_1_1)
-            .code(401)
-            .message("Unauthorized")
+            .code(httpStatus)
+            .message(if (httpStatus == 403) "Forbidden" else "Unauthorized")
             .apply { nonce?.let { header("DPoP-Nonce", it) } }
             .apply { requestIdHeader?.let { header("X-Latchway-Request-ID", it) } }
             .body(
-                """{"status":$problemStatus,"code":"$code","request_id":"req_12345678","detail":"Request rejected","retryable":false}"""
+                """{"type":"https://latchway.dev/problems/$code","title":"Request rejected","status":$problemStatus,"code":"$code","request_id":"req_12345678","detail":"Request rejected","retryable":${code == "dpop_nonce_required" || code == "session_expired"}}"""
                     .toResponseBody(mediaType.toMediaType()),
             )
             .build()

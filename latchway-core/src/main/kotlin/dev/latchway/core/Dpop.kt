@@ -55,6 +55,23 @@ public interface InstallationSigner {
     public suspend fun sign(signingInput: ByteArray): ByteArray
 }
 
+/**
+ * Optional lifecycle support for signers whose key can be destroyed locally.
+ * Existing custom [InstallationSigner] implementations remain valid, while
+ * managed signers can prevent a revoked or replaced key from being reused.
+ */
+public interface ResettableInstallationSigner : InstallationSigner {
+    /** Returns false when this signer no longer owns its original key identity. */
+    public suspend fun isCurrent(): Boolean = true
+
+    /**
+     * Destroys the original installation key without deleting a replacement
+     * key. Implementations must be retry-safe because another coordinator can
+     * resume cleanup after a transient failure.
+     */
+    public suspend fun reset()
+}
+
 public data class DpopProofRequest(
     val method: String,
     val uri: URI,
@@ -179,6 +196,11 @@ internal fun canonicalHtu(uri: URI): String {
 }
 
 internal fun sha256(input: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(input)
+
+internal fun accessTokenFingerprint(value: SecretValue): String =
+    Base64Url.encode(sha256(value.reveal().toByteArray(StandardCharsets.US_ASCII)))
+
+internal fun SessionSnapshot.accessTokenFingerprint(): String = accessTokenFingerprint(accessToken)
 
 internal fun jsonString(value: String): String = buildString(value.length + 2) {
     append('"')

@@ -7,6 +7,26 @@ Versioning once package publication begins.
 
 ## [Unreleased]
 
+### Changed
+
+- Synchronized the SDK with core contract `0.3.0` while retaining wire
+  protocol `1`; compatibility is declared for server `0.3.0` through the
+  tested `0.3.x` series, and indeterminate-operation errors preserve their
+  required operation ID.
+- Server-confirmed installation revocation is terminal for that client,
+  performs retryable non-cancellable state and DPoP-key cleanup, and prevents
+  transport or reprovisioning with the revoked JKT; cleanup can fail over to a
+  peer coordinator after a local key-reset failure.
+- Cross-client refresh and persistence are coordinated by installation and
+  session generation, stale responses cannot clear replacement grants, and a
+  network origin guard blocks Latchway headers before cross-origin redirects.
+- Android Keystore create, sign, and reset operations are coordinated per
+  process-wide alias, and stale signer instances reject replacement keys.
+- The conformance sample uses the supported OpenAI Chat route and requires an
+  explicit non-secret model value.
+- OkHttp runtime helpers remain compatible with API 23 and avoid retaining a
+  strong static Android context.
+
 ### Added
 
 - Initial governance, contribution, security, and architecture documentation.

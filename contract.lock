@@ -1,7 +1,7 @@
-contract_version: 0.2.0
+contract_version: 0.3.0
 wire_protocol: 1
 core_release: unreleased
-core_commit: 68fa1ba28a80cd3fb1e50dffdefc7de935da9f4c
-bundle_sha256: "a4b320906d1bb02712451224c2111d3a673b4df24631c2f1de01ca5dfbfd0059"
-minimum_server_version: 0.2.0
-maximum_tested_server_version: 0.2.x
+core_commit: 05f88b41813c210a23a459519abd3f7a9c3e45fa
+bundle_sha256: "ea265cfa750df8faeeaeac7bc60c04c4d907384205b5bf4d78a22a79dfc4d24c"
+minimum_server_version: 0.3.0
+maximum_tested_server_version: 0.3.x

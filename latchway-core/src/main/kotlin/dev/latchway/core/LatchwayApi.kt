@@ -6,7 +6,7 @@ import java.net.URI
 import java.util.Locale
 
 public const val LATCHWAY_SDK_VERSION: String = "0.1.0"
-public const val LATCHWAY_CONTRACT_VERSION: String = "0.2.0"
+public const val LATCHWAY_CONTRACT_VERSION: String = "0.3.0"
 public const val LATCHWAY_PROTOCOL_VERSION: Int = 1
 
 internal val ATTESTATION_PROVIDERS: Set<String> = setOf(
@@ -100,6 +100,7 @@ public enum class LatchwayErrorCode(public val wireValue: String) {
     ETAG_REQUIRED("etag_required"),
     ETAG_MISMATCH("etag_mismatch"),
     BOOTSTRAP_DISABLED("bootstrap_disabled"),
+    OPERATION_INDETERMINATE("operation_indeterminate"),
     INTERNAL_ERROR("internal_error"),
     KEY_UNAVAILABLE("key_unavailable"),
     SECURE_STATE_UNAVAILABLE("secure_state_unavailable"),
@@ -121,13 +122,20 @@ public class LatchwayException(
     cause: Throwable? = null,
 ) : IOException(sanitizeMessage(safeMessage), cause?.let(::sanitizeCause)) {
     public val requestId: String? = sanitizeRequestId(requestId)
+    private var canonicalOperationId: String? = null
+    public val operationId: String? get() = canonicalOperationId
 
     override fun toString(): String = buildString {
         append("LatchwayException(code=")
         append(code.wireValue)
         requestId?.let { append(", requestId=").append(it) }
+        operationId?.let { append(", operationId=").append(it) }
         httpStatus?.let { append(", httpStatus=").append(it) }
         append(", retryable=").append(retryable).append(')')
+    }
+
+    internal fun attachOperationId(value: String?): LatchwayException = apply {
+        canonicalOperationId = sanitizeOperationId(value)
     }
 }
 
@@ -265,6 +273,8 @@ public class AuthorizedHeaders internal constructor(
     private val proof: SecretValue,
     public val requestId: String,
 ) {
+    internal val accessTokenFingerprint: String = accessTokenFingerprint(accessToken)
+
     public fun authorizationHeader(): String = "DPoP ${accessToken.reveal()}"
     public fun dpopHeader(): String = proof.reveal()
     override fun toString(): String = "AuthorizedHeaders(requestId=$requestId, credentials=[REDACTED])"
@@ -282,9 +292,14 @@ public class LatchwayCoreClient internal constructor(
 
     public suspend fun quota(feature: String): LatchwayQuotaSnapshot = coordinator.quota(feature)
     public suspend fun revokeCurrentInstallation(): Unit = coordinator.revokeCurrentInstallation()
+    /** Applies a trusted server `installation_revoked` result and destroys local installation state. */
+    public suspend fun markCurrentInstallationRevoked(): Unit = coordinator.markCurrentInstallationRevoked()
     public suspend fun diagnostics(): LatchwayDiagnostics = coordinator.diagnostics()
     public suspend fun refresh(): Unit = coordinator.forceRefresh()
     public suspend fun clearSession(): Unit = coordinator.clearSession()
+    /** Clears state only when it still belongs to the supplied authorization generation. */
+    public suspend fun clearSessionIfCurrent(authorization: AuthorizedHeaders): Unit =
+        coordinator.clearSessionIfCurrent(authorization.accessTokenFingerprint)
     override fun close(): Unit = coordinator.close()
 
     public companion object {
@@ -342,6 +357,10 @@ private fun sanitizeMessage(value: String): String {
 
 private fun sanitizeRequestId(value: String?): String? = value?.takeIf {
     it.length in 8..128 && Regex("^[A-Za-z0-9][A-Za-z0-9._:-]*$").matches(it)
+}
+
+internal fun sanitizeOperationId(value: String?): String? = value?.takeIf {
+    Regex("^arq_[0-7][0-9A-HJKMNPQRSTVWXYZ]{25}$").matches(it)
 }
 
 private fun sanitizeCause(original: Throwable): Throwable = Exception(

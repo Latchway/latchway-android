@@ -23,16 +23,23 @@ public class AndroidKeystoreInstallationSigner private constructor(
     private val alias: String,
     override val publicJwk: PublicJwk,
     override val diagnostics: KeyDiagnostics,
-) : InstallationSigner {
+) : ResettableInstallationSigner {
+    private val lifecycle = AliasBoundInstallationKey(alias, publicJwk.thumbprint())
+
     override suspend fun sign(signingInput: ByteArray): ByteArray = withContext(Dispatchers.IO) {
         try {
-            val keyStore = loadKeyStore()
-            val privateKey = keyStore.getKey(alias, null)
-                ?: throw IllegalStateException("Installation key is absent")
-            val signature = Signature.getInstance("SHA256withECDSA")
-            signature.initSign(privateKey as java.security.PrivateKey)
-            signature.update(signingInput)
-            EcdsaSignatureCodec.derToJose(signature.sign())
+            lifecycle.sign(
+                currentIdentity = { currentIdentity(alias) },
+                unavailable = { IllegalStateException("Installation key was reset or replaced") },
+            ) {
+                val keyStore = loadKeyStore()
+                val privateKey = keyStore.getKey(alias, null)
+                    ?: throw IllegalStateException("Installation key is absent")
+                val signature = Signature.getInstance("SHA256withECDSA")
+                signature.initSign(privateKey as java.security.PrivateKey)
+                signature.update(signingInput)
+                EcdsaSignatureCodec.derToJose(signature.sign())
+            }
         } catch (error: LatchwayException) {
             throw error
         } catch (error: CancellationException) {
@@ -41,6 +48,38 @@ public class AndroidKeystoreInstallationSigner private constructor(
             throw LatchwayException(
                 code = LatchwayErrorCode.KEY_UNAVAILABLE,
                 safeMessage = "The installation signing key is unavailable",
+                cause = error,
+            )
+        }
+    }
+
+    override suspend fun isCurrent(): Boolean = withContext(Dispatchers.IO) {
+        try {
+            lifecycle.isCurrent { currentIdentity(alias) }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    override suspend fun reset(): Unit = withContext(Dispatchers.IO) {
+        try {
+            lifecycle.reset(
+                currentIdentity = { currentIdentity(alias) },
+                delete = {
+                    val keyStore = loadKeyStore()
+                    if (keyStore.containsAlias(alias)) keyStore.deleteEntry(alias)
+                },
+            )
+        } catch (error: LatchwayException) {
+            throw error
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            throw LatchwayException(
+                code = LatchwayErrorCode.KEY_UNAVAILABLE,
+                safeMessage = "The installation signing key could not be reset",
                 cause = error,
             )
         }
@@ -55,60 +94,87 @@ public class AndroidKeystoreInstallationSigner private constructor(
             policy: KeyPolicy = KeyPolicy(),
         ): AndroidKeystoreInstallationSigner = withContext(Dispatchers.IO) {
             require(ALIAS.matches(alias)) { "Keystore alias is invalid" }
-            val keyStore = loadKeyStore()
-            val existing = keyStore.getCertificate(alias)?.publicKey as? ECPublicKey
-            val strongBoxRequested = policy.preferStrongBox
-            var strongBoxUnavailable = false
-            val publicKey = if (existing != null) {
-                existing
-            } else {
-                val attempts = generationAttempts(
-                    policy = policy,
-                    apiLevel = Build.VERSION.SDK_INT,
-                    strongBoxFeaturePresent = context.packageManager.hasSystemFeature(
-                        PackageManager.FEATURE_STRONGBOX_KEYSTORE,
-                    ),
-                )
-                val mayUseStrongBox = attempts.first() == KeyGenerationAttempt.STRONGBOX
-                strongBoxUnavailable = strongBoxRequested && !mayUseStrongBox
-                if (mayUseStrongBox) {
-                    try {
-                        generate(alias, strongBox = true)
-                    } catch (_: ProviderException) {
-                        strongBoxUnavailable = true
+            InstallationKeyAliasLocks.withAlias(alias) {
+                createLocked(context, alias, policy)
+            }
+        }
+
+        private fun createLocked(
+            context: Context,
+            alias: String,
+            policy: KeyPolicy,
+        ): AndroidKeystoreInstallationSigner =
+            try {
+                val keyStore = loadKeyStore()
+                val existing = keyStore.getCertificate(alias)?.publicKey as? ECPublicKey
+                val strongBoxRequested = policy.preferStrongBox
+                var strongBoxUnavailable = false
+                val publicKey = if (existing != null) {
+                    existing
+                } else {
+                    val attempts = generationAttempts(
+                        policy = policy,
+                        apiLevel = Build.VERSION.SDK_INT,
+                        strongBoxFeaturePresent = context.packageManager.hasSystemFeature(
+                            PackageManager.FEATURE_STRONGBOX_KEYSTORE,
+                        ),
+                    )
+                    val mayUseStrongBox = attempts.first() == KeyGenerationAttempt.STRONGBOX
+                    strongBoxUnavailable = strongBoxRequested && !mayUseStrongBox
+                    if (mayUseStrongBox) {
+                        try {
+                            generate(alias, strongBox = true)
+                        } catch (_: ProviderException) {
+                            strongBoxUnavailable = true
+                            generate(alias, strongBox = false)
+                        }
+                    } else {
                         generate(alias, strongBox = false)
                     }
-                } else {
-                    generate(alias, strongBox = false)
+                    loadKeyStore().getCertificate(alias).publicKey as ECPublicKey
                 }
-                loadKeyStore().getCertificate(alias).publicKey as ECPublicKey
-            }
 
-            val privateKey = loadKeyStore().getKey(alias, null) as java.security.PrivateKey
-            val backing = inspectBacking(privateKey)
-            if (strongBoxRequested && backing != KeyBacking.STRONGBOX) strongBoxUnavailable = true
-            if (backing == KeyBacking.SOFTWARE && !policy.allowSoftwareBacked) {
-                loadKeyStore().deleteEntry(alias)
+                val privateKey = loadKeyStore().getKey(alias, null) as? java.security.PrivateKey
+                    ?: throw IllegalStateException("Installation key is absent")
+                val backing = inspectBacking(privateKey)
+                if (strongBoxRequested && backing != KeyBacking.STRONGBOX) strongBoxUnavailable = true
+                if (backing == KeyBacking.SOFTWARE && !policy.allowSoftwareBacked) {
+                    loadKeyStore().deleteEntry(alias)
+                    throw LatchwayException(
+                        code = LatchwayErrorCode.KEY_UNAVAILABLE,
+                        safeMessage = "A hardware-backed installation key is required by policy",
+                    )
+                }
+                val jwk = publicJwk(publicKey)
+                AndroidKeystoreInstallationSigner(
+                    alias = alias,
+                    publicJwk = jwk,
+                    diagnostics = KeyDiagnostics(
+                        backing = backing,
+                        strongBoxRequested = strongBoxRequested,
+                        strongBoxUnavailable = strongBoxUnavailable,
+                        publicJwkThumbprint = jwk.thumbprint(),
+                    ),
+                )
+            } catch (error: LatchwayException) {
+                throw error
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
                 throw LatchwayException(
                     code = LatchwayErrorCode.KEY_UNAVAILABLE,
-                    safeMessage = "A hardware-backed installation key is required by policy",
+                    safeMessage = "The installation signing key is unavailable",
+                    cause = error,
                 )
             }
-            val jwk = PublicJwk(
-                x = Base64Url.encode(unsignedCoordinate(publicKey.w.affineX)),
-                y = Base64Url.encode(unsignedCoordinate(publicKey.w.affineY)),
-            )
-            AndroidKeystoreInstallationSigner(
-                alias = alias,
-                publicJwk = jwk,
-                diagnostics = KeyDiagnostics(
-                    backing = backing,
-                    strongBoxRequested = strongBoxRequested,
-                    strongBoxUnavailable = strongBoxUnavailable,
-                    publicJwkThumbprint = jwk.thumbprint(),
-                ),
-            )
-        }
+
+        private fun currentIdentity(alias: String): String? =
+            (loadKeyStore().getCertificate(alias)?.publicKey as? ECPublicKey)?.let(::publicJwk)?.thumbprint()
+
+        private fun publicJwk(publicKey: ECPublicKey): PublicJwk = PublicJwk(
+            x = Base64Url.encode(unsignedCoordinate(publicKey.w.affineX)),
+            y = Base64Url.encode(unsignedCoordinate(publicKey.w.affineY)),
+        )
 
         private val ALIAS = Regex("^[A-Za-z0-9._-]{1,128}$")
 

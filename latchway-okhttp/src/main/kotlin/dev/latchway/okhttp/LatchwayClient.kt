@@ -3,6 +3,7 @@ package dev.latchway.okhttp
 import android.content.ContentProvider
 import android.content.ContentValues
 import android.content.Context
+import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.database.Cursor
 import android.net.Uri
@@ -10,6 +11,7 @@ import android.os.Build
 import dev.latchway.core.AndroidEncryptedSessionStateStore
 import dev.latchway.core.AndroidKeystoreInstallationSigner
 import dev.latchway.core.AttestationProvider
+import dev.latchway.core.AuthorizedHeaders
 import dev.latchway.core.Base64Url
 import dev.latchway.core.CoreConfiguration
 import dev.latchway.core.IdentityTokenProvider
@@ -37,6 +39,7 @@ import okhttp3.Response
 import okhttp3.Route
 import org.json.JSONObject
 import java.io.Closeable
+import java.lang.ref.WeakReference
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 
@@ -90,8 +93,18 @@ public class LatchwayClient(
         val request = chain.request()
         if (!isGatewayOrigin(request.url)) return@Interceptor chain.proceed(request)
         val feature = request.latchwayFeature()
-        chain.proceed(runBlocking { authorizeInternal(request, feature, nonce = null) })
+        val response = chain.proceed(runBlocking { authorizeInternal(request, feature, nonce = null) })
+        observeInstallationRevocation(response, ::isGatewayOrigin) {
+            runCatching { runBlocking { core.markCurrentInstallationRevoked() } }
+        }
+        response
     }
+
+    /**
+     * Install as a network interceptor. It blocks Latchway credentials from
+     * following an automatic redirect to a different origin.
+     */
+    public fun originGuard(): Interceptor = gatewayOriginGuard(configuration.baseUrl)
 
     public fun authenticator(): Authenticator = object : Authenticator {
         override fun authenticate(route: Route?, response: Response): Request? {
@@ -113,7 +126,8 @@ public class LatchwayClient(
                     }
                 }.getOrNull()
                 AuthenticationAction.CLEAR -> {
-                    runCatching { runBlocking { core.clearSession() } }
+                    val authorization = request.tag(AuthorizedHeaders::class.java) ?: return null
+                    runCatching { runBlocking { core.clearSessionIfCurrent(authorization) } }
                     null
                 }
                 AuthenticationAction.NONE -> null
@@ -162,6 +176,7 @@ public class LatchwayClient(
             .header("X-Latchway-SDK-Version", configuration.sdkVersion)
             .header("X-Latchway-Request-ID", authorized.requestId)
             .header("X-Latchway-Feature", feature)
+            .tag(AuthorizedHeaders::class.java, authorized)
             .tag(LatchwayFeature::class.java, LatchwayFeature(feature))
             .build()
     }
@@ -208,13 +223,13 @@ public class LatchwayClient(
 }
 
 internal object LatchwayAndroidRuntime {
-    @Volatile private var context: Context? = null
+    @Volatile private var contextReference = WeakReference<Context>(null)
 
     fun install(context: Context) {
-        this.context = context.applicationContext
+        contextReference = WeakReference(context.applicationContext)
     }
 
-    fun requireContext(): Context = context ?: throw IllegalStateException(
+    fun requireContext(): Context = contextReference.get() ?: throw IllegalStateException(
         "Latchway Android context provider has not initialized",
     )
 }
@@ -269,10 +284,18 @@ private fun Context.installationMetadata(): InstallationMetadata {
         packageManager.getPackageInfo(packageName, 0)
     }
     return InstallationMetadata(
-        appVersion = packageInfo.versionName?.takeIf { it.isNotBlank() } ?: packageInfo.longVersionCode.toString(),
+        appVersion = packageInfo.versionName?.takeIf { it.isNotBlank() }
+            ?: packageInfo.compatibleVersionCode().toString(),
         osVersion = Build.VERSION.RELEASE,
         deviceModel = listOf(Build.MANUFACTURER, Build.MODEL).filter { it.isNotBlank() }.joinToString(" ").take(128),
     )
+}
+
+private fun PackageInfo.compatibleVersionCode(): Long = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+    longVersionCode
+} else {
+    @Suppress("DEPRECATION")
+    versionCode.toLong()
 }
 
 private fun storageNamespace(configuration: LatchwayConfiguration): String {
@@ -300,7 +323,7 @@ internal fun responseCount(response: Response): Int {
 }
 
 internal fun Response.problemCode(): LatchwayErrorCode? = try {
-    if (code != 401 || body.contentType()?.let {
+    if ((code != 401 && code != 403) || body.contentType()?.let {
             it.type != "application" || it.subtype != "problem+json"
         } != false
     ) {
@@ -311,10 +334,30 @@ internal fun Response.problemCode(): LatchwayErrorCode? = try {
             null
         } else {
             val problem = JSONObject(peekBody(64 * 1024).string())
-            if (problem.getInt("status") != code || problem.getString("request_id") != responseRequestId) {
+            val problemStatus = problem.get("status")
+            val rawCode = problem.get("code") as? String
+            val requestId = problem.get("request_id") as? String
+            val type = problem.get("type") as? String
+            val title = problem.get("title") as? String
+            val detail = problem.get("detail") as? String
+            val retryable = problem.get("retryable") as? Boolean
+            if (problemStatus !is Number || problemStatus.toDouble() != code.toDouble() ||
+                requestId != responseRequestId || rawCode == null ||
+                type != "https://latchway.dev/problems/$rawCode" || title.isNullOrBlank() ||
+                detail.isNullOrBlank() || retryable == null
+            ) {
                 null
             } else {
-                LatchwayErrorCode.fromWire(problem.getString("code"))
+                val problemCode = LatchwayErrorCode.fromWire(rawCode).takeIf { it.wireValue == rawCode }
+                when (code) {
+                    401 -> problemCode?.takeIf {
+                        it in AUTHENTICATOR_PROBLEM_CODES && retryable == it.canonicalRetryability()
+                    }
+                    403 -> problemCode?.takeIf {
+                        it == LatchwayErrorCode.INSTALLATION_REVOKED && !retryable
+                    }
+                    else -> null
+                }
             }
         }
     }
@@ -322,11 +365,54 @@ internal fun Response.problemCode(): LatchwayErrorCode? = try {
     null
 }
 
+internal fun observeInstallationRevocation(
+    response: Response,
+    trustedOrigin: (HttpUrl) -> Boolean,
+    markRevoked: () -> Unit,
+) {
+    if (trustedOrigin(response.request.url) &&
+        response.problemCode() == LatchwayErrorCode.INSTALLATION_REVOKED
+    ) {
+        markRevoked()
+    }
+}
+
+internal fun gatewayOriginGuard(gatewayOrigin: HttpUrl): Interceptor = Interceptor { chain ->
+    val request = chain.request()
+    if (request.hasLatchwayCredentials() && !request.url.hasSameOrigin(gatewayOrigin)) {
+        throw LatchwayException(
+            code = LatchwayErrorCode.CONFIGURATION_INVALID,
+            safeMessage = "Latchway credentials cannot follow a redirect to another origin",
+        )
+    }
+    chain.proceed(request)
+}
+
+private fun Request.hasLatchwayCredentials(): Boolean =
+    header("DPoP") != null || header("Authorization")?.startsWith("DPoP ") == true ||
+        headers.names().any { it.startsWith("X-Latchway-", ignoreCase = true) }
+
+private fun HttpUrl.hasSameOrigin(other: HttpUrl): Boolean =
+    scheme == other.scheme && host == other.host && port == other.port
+
 internal fun isValidNonce(value: String): Boolean =
     value.length in 16..512 && value.none { it.isISOControl() }
 
 private fun isValidRequestId(value: String): Boolean =
     value.length in 8..128 && Regex("^[A-Za-z0-9][A-Za-z0-9._:-]*$").matches(value)
+
+private val AUTHENTICATOR_PROBLEM_CODES: Set<LatchwayErrorCode> = setOf(
+    LatchwayErrorCode.DPOP_NONCE_REQUIRED,
+    LatchwayErrorCode.SESSION_EXPIRED,
+    LatchwayErrorCode.SESSION_REVOKED,
+    LatchwayErrorCode.REFRESH_TOKEN_REUSED,
+)
+
+private fun LatchwayErrorCode.canonicalRetryability(): Boolean = when (this) {
+    LatchwayErrorCode.DPOP_NONCE_REQUIRED,
+    LatchwayErrorCode.SESSION_EXPIRED -> true
+    else -> false
+}
 
 internal enum class AuthenticationAction { NONE, NONCE, REFRESH, CLEAR }
 
@@ -349,8 +435,7 @@ internal fun authenticationDecision(response: Response): AuthenticationDecision 
         }
         LatchwayErrorCode.SESSION_EXPIRED -> AuthenticationDecision(AuthenticationAction.REFRESH)
         LatchwayErrorCode.SESSION_REVOKED,
-        LatchwayErrorCode.REFRESH_TOKEN_REUSED,
-        LatchwayErrorCode.INSTALLATION_REVOKED -> AuthenticationDecision(AuthenticationAction.CLEAR)
+        LatchwayErrorCode.REFRESH_TOKEN_REUSED -> AuthenticationDecision(AuthenticationAction.CLEAR)
         else -> AuthenticationDecision(AuthenticationAction.NONE)
     }
 }

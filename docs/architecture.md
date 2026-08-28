@@ -3,7 +3,7 @@
 ## Status
 
 This document describes the unreleased `0.1.0-SNAPSHOT` implementation locked
-to contract `0.2.0` and wire protocol `1`. Public APIs remain handwritten; the
+to contract `0.3.0` and wire protocol `1`. Public APIs remain handwritten; the
 internal JSON boundary is validated directly against the core schemas and
 shared fixtures.
 
@@ -103,8 +103,13 @@ cross-origin control credential forwarding.
 Credential attachment is pinned to the configured scheme, host, and effective
 port. Control responses and problem bodies have strict byte limits.
 
-Cancellation and streaming flow end to end. Errors expose stable safe fields
-and request identifiers, never tokens or raw integrity evidence.
+Cancellation and streaming flow end to end. Process-wide installation gates
+serialize refresh rotation and grant persistence across SDK client instances;
+cleanup is bound to the exact access-token generation so a delayed old-session
+response cannot erase a newer grant. The OkHttp network origin guard blocks
+Latchway headers before a cross-origin redirect is dispatched. Errors expose
+stable safe fields, request identifiers, and the required operation ID for
+indeterminate outcomes, never tokens or raw integrity evidence.
 
 ## Verification boundary
 

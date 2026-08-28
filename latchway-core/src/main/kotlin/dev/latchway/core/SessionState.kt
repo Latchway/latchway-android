@@ -11,6 +11,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.nio.charset.StandardCharsets
 import java.security.KeyStore
+import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -62,47 +63,39 @@ public interface SessionStateStore {
     public suspend fun clear()
 }
 
+internal interface InstallationBoundSessionStateStore {
+    suspend fun clearIfInstallation(expectedDpopJkt: String)
+    suspend fun clearIfSession(expectedDpopJkt: String, expectedAccessTokenFingerprint: String)
+}
+
+internal object SessionStateNamespaceLocks {
+    private val locks = ConcurrentHashMap<String, Mutex>()
+
+    fun lock(namespace: String): Mutex {
+        locks[namespace]?.let { return it }
+        val candidate = Mutex()
+        return locks.putIfAbsent(namespace, candidate) ?: candidate
+    }
+}
+
 /** AES-256-GCM state whose encryption key remains in Android Keystore. */
 public class AndroidEncryptedSessionStateStore(
     context: Context,
     namespace: String,
-) : SessionStateStore {
+) : SessionStateStore, InstallationBoundSessionStateStore {
     private val preferences = context.applicationContext.getSharedPreferences(
         "dev.latchway.session.$namespace",
         Context.MODE_PRIVATE,
     )
     private val keyAlias = "dev.latchway.session.$namespace.aes.v1"
     private val aad = "latchway-session-v1:$namespace".toByteArray(StandardCharsets.UTF_8)
-    private val mutex = Mutex()
+    private val mutex = SessionStateNamespaceLocks.lock(namespace)
 
     init {
         require(NAMESPACE.matches(namespace)) { "Session state namespace is invalid" }
     }
 
-    override suspend fun load(): SessionSnapshot? = mutex.withLock {
-        withContext(Dispatchers.IO) {
-            val encodedCiphertext = preferences.getString(CIPHERTEXT, null) ?: return@withContext null
-            val encodedIv = preferences.getString(IV, null) ?: return@withContext corruptState()
-            if (preferences.getString(VERSION, null) != "1") return@withContext corruptState()
-            try {
-                val plaintext = SessionStateEncryption.decrypt(
-                    key = encryptionKey(),
-                    aad = aad,
-                    blob = EncryptedSessionBlob(
-                        iv = Base64Url.decode(encodedIv),
-                        ciphertext = Base64Url.decode(encodedCiphertext),
-                    ),
-                )
-                decodeSnapshot(String(plaintext, StandardCharsets.UTF_8))
-            } catch (error: LatchwayException) {
-                throw error
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Exception) {
-                corruptState(error)
-            }
-        }
-    }
+    override suspend fun load(): SessionSnapshot? = mutex.withLock { loadLocked() }
 
     override suspend fun save(snapshot: SessionSnapshot): Unit = mutex.withLock {
         withContext(Dispatchers.IO) {
@@ -134,14 +127,54 @@ public class AndroidEncryptedSessionStateStore(
         }
     }
 
-    override suspend fun clear(): Unit = mutex.withLock {
-        withContext(Dispatchers.IO) {
-            if (!preferences.edit().clear().commit()) {
-                throw LatchwayException(
-                    code = LatchwayErrorCode.SECURE_STATE_UNAVAILABLE,
-                    safeMessage = "Encrypted session state could not be cleared",
-                )
-            }
+    override suspend fun clear(): Unit = mutex.withLock { clearLocked() }
+
+    override suspend fun clearIfInstallation(expectedDpopJkt: String): Unit = mutex.withLock {
+        val stored = loadLocked() ?: return@withLock
+        if (stored.installation.dpopJkt == expectedDpopJkt) clearLocked()
+    }
+
+    override suspend fun clearIfSession(
+        expectedDpopJkt: String,
+        expectedAccessTokenFingerprint: String,
+    ): Unit = mutex.withLock {
+        val stored = loadLocked() ?: return@withLock
+        if (stored.installation.dpopJkt == expectedDpopJkt &&
+            stored.accessTokenFingerprint() == expectedAccessTokenFingerprint
+        ) {
+            clearLocked()
+        }
+    }
+
+    private suspend fun loadLocked(): SessionSnapshot? = withContext(Dispatchers.IO) {
+        val encodedCiphertext = preferences.getString(CIPHERTEXT, null) ?: return@withContext null
+        val encodedIv = preferences.getString(IV, null) ?: return@withContext corruptState()
+        if (preferences.getString(VERSION, null) != "1") return@withContext corruptState()
+        try {
+            val plaintext = SessionStateEncryption.decrypt(
+                key = encryptionKey(),
+                aad = aad,
+                blob = EncryptedSessionBlob(
+                    iv = Base64Url.decode(encodedIv),
+                    ciphertext = Base64Url.decode(encodedCiphertext),
+                ),
+            )
+            decodeSnapshot(String(plaintext, StandardCharsets.UTF_8))
+        } catch (error: LatchwayException) {
+            throw error
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            corruptState(error)
+        }
+    }
+
+    private suspend fun clearLocked(): Unit = withContext(Dispatchers.IO) {
+        if (!preferences.edit().clear().commit()) {
+            throw LatchwayException(
+                code = LatchwayErrorCode.SECURE_STATE_UNAVAILABLE,
+                safeMessage = "Encrypted session state could not be cleared",
+            )
         }
     }
 

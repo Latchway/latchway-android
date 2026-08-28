@@ -5,7 +5,7 @@ import dev.latchway.core.AttestationEvidence
 import dev.latchway.core.AttestationProvider
 import dev.latchway.core.Base64Url
 import dev.latchway.core.IdentityTokenProvider
-import dev.latchway.core.InstallationSigner
+import dev.latchway.core.ResettableInstallationSigner
 import dev.latchway.core.KeyBacking
 import dev.latchway.core.KeyDiagnostics
 import dev.latchway.core.LatchwayTransport
@@ -86,7 +86,9 @@ public class ScriptedLatchwayTransport(
 public class SoftwareTestInstallationSigner private constructor(
     private val keyPair: KeyPair,
     override val publicJwk: PublicJwk,
-) : InstallationSigner {
+) : ResettableInstallationSigner {
+    @Volatile private var invalidated = false
+
     override val diagnostics: KeyDiagnostics = KeyDiagnostics(
         backing = KeyBacking.SOFTWARE,
         strongBoxRequested = false,
@@ -95,10 +97,17 @@ public class SoftwareTestInstallationSigner private constructor(
     )
 
     override suspend fun sign(signingInput: ByteArray): ByteArray {
+        check(!invalidated) { "Installation key was reset" }
         val signature = Signature.getInstance("SHA256withECDSA")
         signature.initSign(keyPair.private)
         signature.update(signingInput)
         return derToJose(signature.sign())
+    }
+
+    override suspend fun isCurrent(): Boolean = !invalidated
+
+    override suspend fun reset() {
+        invalidated = true
     }
 
     public companion object {

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "manifest_version": 1,
+  "contract_version": "0.3.0",
+  "contract_status": "draft",
+  "wire_protocol": {
+    "current": 1,
+    "supported": [1],
+    "minimum": 1
+  },
+  "bundle": {
+    "file_name": "latchway-contract-0.3.0.tar.gz",
+    "required_entries": [
+      "client.openapi.yaml",
+      "admin.openapi.yaml",
+      "config.schema.json",
+      "attestation-binding.schema.json",
+      "error-codes.yaml",
+      "protocol-version.json",
+      "test-vectors",
+      "SHA256SUMS"
+    ]
+  },
+  "dpop": {
+    "specification": "RFC 9449",
+    "jwk_thumbprint_specification": "RFC 7638",
+    "algorithms": ["ES256"],
+    "curves": ["P-256"],
+    "proof_type": "dpop+jwt"
+  },
+  "attestation_binding": {
+    "version": 1,
+    "canonicalization": "RFC 8785 JCS",
+    "hash": "SHA-256"
+  },
+  "standard_headers": {
+    "feature": "X-Latchway-Feature",
+    "sdk": "X-Latchway-SDK",
+    "sdk_version": "X-Latchway-SDK-Version",
+    "protocol_version": "X-Latchway-Protocol-Version",
+    "request_id": "X-Latchway-Request-ID"
+  },
+  "sdk_kinds": ["ios", "android", "javascript", "react-native"],
+  "released_at": null
+}

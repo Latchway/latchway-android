@@ -4,10 +4,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
@@ -15,7 +17,9 @@ import org.json.JSONException
 import org.json.JSONObject
 import java.net.URI
 import java.nio.charset.StandardCharsets
+import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 
 internal class SessionCoordinator(
     private val configuration: CoreConfiguration,
@@ -29,8 +33,21 @@ internal class SessionCoordinator(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val sessionMutex = Mutex()
+    private val revocationMutex = Mutex()
     private var inFlightSession: Deferred<SessionSnapshot>? = null
     private val proofFactory = DpopProofFactory(signer, clock)
+    private val signerIdentity = signer.publicJwk.thumbprint()
+    private val sessionCoordinationKey = SessionCoordinationKey(
+        baseUrl = coordinationOrigin(configuration.baseUrl),
+        applicationId = configuration.applicationId,
+        environment = configuration.environment,
+        identityProvider = configuration.identityProvider,
+        platform = configuration.clientPlatform.wireValue,
+        signerIdentity = signerIdentity,
+    )
+    private val resettableSigner = signer as? ResettableInstallationSigner
+    private val installationRevoked = AtomicBoolean(false)
+    @Volatile private var revocationCleanupComplete = false
 
     suspend fun authorize(method: String, uri: URI, feature: String, nonce: String?): AuthorizedHeaders {
         requireIdentifier(feature, "feature")
@@ -44,6 +61,7 @@ internal class SessionCoordinator(
                 nonce = nonce,
             ),
         )
+        ensureInstallationActive()
         return AuthorizedHeaders(state.accessToken, proof, requestId)
     }
 
@@ -67,16 +85,14 @@ internal class SessionCoordinator(
     suspend fun revokeCurrentInstallation() {
         val response = executeProtected("DELETE", "/client/v1/installations/current")
         if (response.statusCode == 204) {
-            stateStore.clear()
+            cleanupRevokedInstallation()
             return
         }
-        val problem = problem(response)
-        if (problem.code == LatchwayErrorCode.INSTALLATION_REVOKED ||
-            problem.code == LatchwayErrorCode.SESSION_REVOKED
-        ) {
-            stateStore.clear()
-        }
-        throw problem
+        throw problem(response)
+    }
+
+    suspend fun markCurrentInstallationRevoked() {
+        cleanupRevokedInstallation()
     }
 
     suspend fun forceRefresh() {
@@ -84,11 +100,19 @@ internal class SessionCoordinator(
     }
 
     suspend fun clearSession() {
+        if (installationRevoked.get() || InstallationKeyRetirements.isRetired(signerIdentity)) {
+            cleanupRevokedInstallation()
+            return
+        }
         val pending = sessionMutex.withLock {
             inFlightSession?.also { it.cancel() }.also { inFlightSession = null }
         }
         pending?.let { joinAll(it) }
-        stateStore.clear()
+        clearPersistedState(signerIdentity)
+    }
+
+    suspend fun clearSessionIfCurrent(expectedAccessTokenFingerprint: String) {
+        clearPersistedSession(expectedAccessTokenFingerprint)
     }
 
     fun close() {
@@ -96,38 +120,143 @@ internal class SessionCoordinator(
     }
 
     private suspend fun currentSession(forceRefresh: Boolean): SessionSnapshot {
-        val task = sessionMutex.withLock {
-            inFlightSession?.takeIf { it.isActive } ?: scope.async {
-                val stored = stateStore.load()
-                val now = clock.epochSeconds()
-                when {
-                    !forceRefresh && stored != null &&
-                        stored.accessExpiresAtEpochSeconds - configuration.refreshLeewaySeconds > now -> stored
-                    stored != null &&
-                        stored.refreshExpiresAtEpochSeconds - configuration.refreshLeewaySeconds > now -> {
-                        try {
-                            refreshSession(stored)
-                        } catch (error: LatchwayException) {
-                            if (error.code.clearsSession()) stateStore.clear()
-                            if (error.code.allowsNewSession()) {
-                                stateStore.clear()
-                                establishSession()
-                            } else {
-                                throw error
+        ensureInstallationActive()
+        val task = try {
+            sessionMutex.withLock {
+                throwIfInstallationRevoked()
+                inFlightSession?.takeIf { it.isActive } ?: scope.async {
+                    SessionCoordinationLocks.withSession(sessionCoordinationKey) {
+                        throwIfInstallationRevoked()
+                        val stored = loadCurrentSignerState()
+                        val now = clock.epochSeconds()
+                        when {
+                            !forceRefresh && stored != null &&
+                                stored.accessExpiresAtEpochSeconds - configuration.refreshLeewaySeconds > now -> stored
+                            stored != null &&
+                                stored.refreshExpiresAtEpochSeconds - configuration.refreshLeewaySeconds > now -> {
+                                try {
+                                    refreshSession(stored)
+                                } catch (error: LatchwayException) {
+                                    if (error.code.clearsSession()) clearPersistedSession(stored)
+                                    if (error.code.allowsNewSession()) {
+                                        clearPersistedSession(stored)
+                                        establishSession()
+                                    } else {
+                                        throw error
+                                    }
+                                }
                             }
+                            else -> establishSession()
                         }
                     }
-                    else -> establishSession()
-                }
-            }.also { inFlightSession = it }
+                }.also { inFlightSession = it }
+            }
+        } catch (error: LatchwayException) {
+            if (error.code == LatchwayErrorCode.INSTALLATION_REVOKED) cleanupRevokedInstallation()
+            throw error
         }
         return try {
-            task.await()
+            val result = task.await()
+            ensureInstallationActive()
+            result
+        } catch (error: LatchwayException) {
+            if (error.code == LatchwayErrorCode.INSTALLATION_REVOKED) {
+                cleanupRevokedInstallation()
+            }
+            throw error
         } finally {
             sessionMutex.withLock {
                 if (inFlightSession === task && task.isCompleted) inFlightSession = null
             }
         }
+    }
+
+    private suspend fun cleanupRevokedInstallation() {
+        markInstallationRevoked()
+        withContext(NonCancellable) {
+            sessionMutex.withLock {
+                inFlightSession?.cancel()
+                inFlightSession = null
+            }
+            revocationMutex.withLock {
+                if (revocationCleanupComplete) return@withLock
+                var cleanupFailure: Exception? = null
+                try {
+                    clearPersistedState(signerIdentity)
+                } catch (error: CancellationException) {
+                    cleanupFailure = error
+                } catch (error: LatchwayException) {
+                    cleanupFailure = error
+                } catch (error: Exception) {
+                    cleanupFailure = LatchwayException(
+                        code = LatchwayErrorCode.SECURE_STATE_UNAVAILABLE,
+                        safeMessage = "Encrypted session state could not be cleared",
+                        cause = error,
+                    )
+                }
+                try {
+                    resettableSigner?.let { currentSigner ->
+                        InstallationKeyRetirements.resetKey(signerIdentity) {
+                            currentSigner.reset()
+                        }
+                    }
+                } catch (error: CancellationException) {
+                    cleanupFailure = cleanupFailure ?: error
+                } catch (error: LatchwayException) {
+                    cleanupFailure = cleanupFailure ?: error
+                } catch (error: Exception) {
+                    cleanupFailure = cleanupFailure ?: LatchwayException(
+                        code = LatchwayErrorCode.KEY_UNAVAILABLE,
+                        safeMessage = "The installation signing key could not be reset",
+                        cause = error,
+                    )
+                }
+                revocationCleanupComplete = cleanupFailure == null
+                cleanupFailure?.let { throw it }
+            }
+        }
+    }
+
+    private fun markInstallationRevoked() {
+        InstallationKeyRetirements.retire(signerIdentity)
+        installationRevoked.set(true)
+    }
+
+    private suspend fun ensureInstallationActive() {
+        if (installationRevoked.get() || InstallationKeyRetirements.isRetired(signerIdentity)) {
+            cleanupRevokedInstallation()
+            throw installationRevokedError()
+        }
+        throwIfInstallationRevoked()
+        ensureSignerCurrent()
+    }
+
+    private fun throwIfInstallationRevoked() {
+        if (installationRevoked.get() || InstallationKeyRetirements.isRetired(signerIdentity)) {
+            throw installationRevokedError()
+        }
+    }
+
+    private suspend fun ensureSignerCurrent() {
+        if (resettableSigner?.isCurrent() == false) {
+            throw LatchwayException(
+                code = LatchwayErrorCode.KEY_UNAVAILABLE,
+                safeMessage = "The installation signing key was reset or replaced",
+            )
+        }
+    }
+
+    private suspend fun ensureInstallationMayPersist() {
+        throwIfInstallationRevoked()
+        ensureSignerCurrent()
+    }
+
+    private suspend fun loadCurrentSignerState(): SessionSnapshot? {
+        ensureInstallationMayPersist()
+        val stored = stateStore.load() ?: return null
+        if (stored.installation.dpopJkt == signerIdentity) return stored
+        clearPersistedState(stored.installation.dpopJkt)
+        return null
     }
 
     private suspend fun establishSession(): SessionSnapshot {
@@ -280,8 +409,52 @@ internal class SessionCoordinator(
         } catch (error: Exception) {
             throw responseInvalid("The server returned an invalid session grant", error)
         }
-        stateStore.save(grant)
+        try {
+            InstallationKeyRetirements.persistIfActive(
+                identity = signerIdentity,
+                inactive = ::installationRevokedError,
+            ) {
+                ensureInstallationMayPersist()
+                stateStore.save(grant)
+                ensureInstallationMayPersist()
+            }
+        } catch (error: LatchwayException) {
+            if (error.code == LatchwayErrorCode.KEY_UNAVAILABLE) {
+                runCatching { clearPersistedSession(grant) }
+            }
+            throw error
+        }
         return grant
+    }
+
+    private suspend fun clearPersistedState(expectedIdentity: String) {
+        InstallationKeyRetirements.withState(expectedIdentity) {
+            if (stateStore is InstallationBoundSessionStateStore) {
+                stateStore.clearIfInstallation(expectedIdentity)
+                return@withState
+            }
+            val stored = stateStore.load() ?: return@withState
+            if (stored.installation.dpopJkt == expectedIdentity) stateStore.clear()
+        }
+    }
+
+    private suspend fun clearPersistedSession(expected: SessionSnapshot) {
+        clearPersistedSession(expected.accessTokenFingerprint())
+    }
+
+    private suspend fun clearPersistedSession(expectedAccessTokenFingerprint: String) {
+        InstallationKeyRetirements.withState(signerIdentity) {
+            if (stateStore is InstallationBoundSessionStateStore) {
+                stateStore.clearIfSession(signerIdentity, expectedAccessTokenFingerprint)
+                return@withState
+            }
+            val stored = stateStore.load() ?: return@withState
+            if (stored.installation.dpopJkt == signerIdentity &&
+                stored.accessTokenFingerprint() == expectedAccessTokenFingerprint
+            ) {
+                stateStore.clear()
+            }
+        }
     }
 
     private suspend fun executeProtected(method: String, path: String): LatchwayTransportResponse {
@@ -289,7 +462,9 @@ internal class SessionCoordinator(
         val uri = configuration.endpoint(path)
         var nonce: String? = null
         repeat(2) { attempt ->
+            ensureInstallationActive()
             val proof = proofFactory.create(DpopProofRequest(method, uri, state.accessToken, nonce))
+            ensureInstallationActive()
             val response = transport.execute(
                 LatchwayTransportRequest(
                     method = method,
@@ -306,7 +481,10 @@ internal class SessionCoordinator(
             } else {
                 if (response.statusCode >= 400) {
                     runCatching { problem(response) }.getOrNull()?.code?.let { code ->
-                        if (code.clearsSession()) stateStore.clear()
+                        when {
+                            code == LatchwayErrorCode.INSTALLATION_REVOKED -> cleanupRevokedInstallation()
+                            code.clearsSession() -> clearPersistedSession(state)
+                        }
                     }
                 }
                 return response
@@ -330,7 +508,9 @@ internal class SessionCoordinator(
         }
         var nonce: String? = null
         repeat(2) { attempt ->
+            throwIfInstallationRevoked()
             val proof = proofFactory.create(DpopProofRequest(method, uri, nonce = nonce))
+            throwIfInstallationRevoked()
             val response = transport.execute(
                 LatchwayTransportRequest(
                     method = method,
@@ -387,12 +567,27 @@ private fun LatchwayErrorCode.allowsNewSession(): Boolean = when (this) {
 
 private fun LatchwayErrorCode.clearsSession(): Boolean = when (this) {
     LatchwayErrorCode.SESSION_REVOKED,
-    LatchwayErrorCode.REFRESH_TOKEN_REUSED,
-    LatchwayErrorCode.INSTALLATION_REVOKED -> true
+    LatchwayErrorCode.REFRESH_TOKEN_REUSED -> true
     else -> false
 }
 
+private fun installationRevokedError(): LatchwayException = LatchwayException(
+    code = LatchwayErrorCode.INSTALLATION_REVOKED,
+    safeMessage = "This client installation has been revoked",
+)
+
 private fun newRequestId(): String = "android:${UUID.randomUUID()}"
+
+private fun coordinationOrigin(uri: URI): String {
+    val scheme = uri.scheme.lowercase(Locale.US)
+    val host = uri.host.lowercase(Locale.US)
+    val port = when {
+        uri.port >= 0 -> uri.port
+        scheme == "http" -> 80
+        else -> 443
+    }
+    return "$scheme://$host:$port"
+}
 
 private fun requireSuccess(
     response: LatchwayTransportResponse,
@@ -403,15 +598,50 @@ private fun requireSuccess(
 
 private fun problem(response: LatchwayTransportResponse): LatchwayException {
     return try {
+        require(isProblemMediaType(response.header("Content-Type")))
         val json = JSONObject(response.utf8Body())
+        val status = json.get("status")
+        require(status is Number && status.toDouble() == response.statusCode.toDouble())
+        val rawCode = boundedString(json, "code", 1, 128)
+        val code = LatchwayErrorCode.fromWire(rawCode)
+        require(code.wireValue == rawCode)
+        require(boundedString(json, "type", 1, 2_048) == "https://latchway.dev/problems/$rawCode")
+        require(boundedString(json, "title", 1, 256).isNotBlank())
+        val detail = boundedString(json, "detail", 1, 2_048).also { require(it.isNotBlank()) }
+        val requestId = boundedString(json, "request_id", 8, 128).also {
+            require(isCanonicalRequestId(it))
+            require(response.header("X-Latchway-Request-ID") == it)
+        }
+        val retryable = json.get("retryable").also { require(it is Boolean) } as Boolean
+        when (code) {
+            LatchwayErrorCode.INSTALLATION_REVOKED -> {
+                require(response.statusCode == 403)
+                require(!retryable)
+            }
+            LatchwayErrorCode.OPERATION_INDETERMINATE -> {
+                require(response.statusCode == 503)
+                require(retryable)
+            }
+            else -> Unit
+        }
+        val rawOperationId = if (json.has("operation_id") && !json.isNull("operation_id")) {
+            json.getString("operation_id")
+        } else {
+            null
+        }
+        val operationId = sanitizeOperationId(rawOperationId)
+        if (code == LatchwayErrorCode.OPERATION_INDETERMINATE) {
+            require(operationId != null)
+        } else {
+            require(!json.has("operation_id"))
+        }
         LatchwayException(
-            code = LatchwayErrorCode.fromWire(json.optString("code", null)),
-            requestId = json.optString("request_id", response.header("X-Latchway-Request-ID"))
-                ?.takeIf { it.isNotBlank() },
-            retryable = json.optBoolean("retryable", false),
+            code = code,
+            requestId = requestId,
+            retryable = retryable,
             httpStatus = response.statusCode,
-            safeMessage = json.optString("detail", "Latchway request failed"),
-        )
+            safeMessage = detail,
+        ).attachOperationId(operationId)
     } catch (error: Exception) {
         LatchwayException(
             code = LatchwayErrorCode.RESPONSE_INVALID,
@@ -422,6 +652,12 @@ private fun problem(response: LatchwayTransportResponse): LatchwayException {
         )
     }
 }
+
+private fun isProblemMediaType(value: String?): Boolean =
+    value?.substringBefore(';')?.trim()?.equals("application/problem+json", ignoreCase = true) == true
+
+private fun isCanonicalRequestId(value: String): Boolean =
+    value.length in 8..128 && Regex("^[A-Za-z0-9][A-Za-z0-9._:-]*$").matches(value)
 
 private fun parseChallenge(
     encoded: String,

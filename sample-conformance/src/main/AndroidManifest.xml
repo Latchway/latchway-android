@@ -5,6 +5,7 @@
         <meta-data android:name="dev.latchway.APPLICATION_ID" android:value="${latchwayApplicationId}" />
         <meta-data android:name="dev.latchway.ENVIRONMENT" android:value="${latchwayEnvironment}" />
         <meta-data android:name="dev.latchway.FEATURE" android:value="${latchwayFeature}" />
+        <meta-data android:name="dev.latchway.MODEL" android:value="${latchwayModel}" />
         <meta-data android:name="dev.latchway.CLOUD_PROJECT_NUMBER" android:value="${latchwayCloudProjectNumber}" />
         <activity android:name=".ConformanceActivity" android:exported="true">
             <intent-filter>
