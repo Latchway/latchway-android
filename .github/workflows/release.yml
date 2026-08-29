@@ -62,18 +62,26 @@ jobs:
           CORE_TAG: ${{ github.event.client_payload.core_tag }}
           REPORT_URL: ${{ github.event.client_payload.promotion_evidence_url }}
           REPORT_SHA256: ${{ github.event.client_payload.promotion_evidence_sha256 }}
+          CORE_READ_TOKEN: ${{ secrets.LATCHWAY_SIBLING_REPOSITORIES_READ_TOKEN || github.token }}
         run: |
           set -euo pipefail
           report="$RUNNER_TEMP/latchway-cross-repository-promotion.json"
+          auth_config="$RUNNER_TEMP/latchway-core-release-auth"
+          trap 'rm -f -- "$auth_config"' EXIT
           test "$REPORT_URL" = "https://github.com/Latchway/latchway/releases/download/$CORE_TAG/latchway-cross-repository-promotion.json"
+          umask 077
+          printf 'header = "Authorization: Bearer %s"\n' "$CORE_READ_TOKEN" > "$auth_config"
           curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --config "$auth_config" \
             --connect-timeout 15 --max-time 120 --max-filesize 2097152 \
             --fail --location --silent --show-error --output "$report" "$REPORT_URL"
+          rm -f -- "$auth_config"
+          trap - EXIT
           printf '%s  %s\n' "$REPORT_SHA256" "$report" | sha256sum --check --strict
       - name: Verify the core workflow artifact attestation
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.LATCHWAY_SIBLING_REPOSITORIES_READ_TOKEN || github.token }}
         run: |
           python3 scripts/require-gh-version.py
           gh attestation verify "$RUNNER_TEMP/latchway-cross-repository-promotion.json" \

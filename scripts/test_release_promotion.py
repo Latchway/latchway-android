@@ -388,6 +388,12 @@ class ReleaseWorkflowTests(unittest.TestCase):
         )
         self.assertIn("--proto-redir '=https'", workflow)
         self.assertIn("--max-filesize 2097152", workflow)
+        self.assertIn("LATCHWAY_SIBLING_REPOSITORIES_READ_TOKEN || github.token", workflow)
+        self.assertIn("latchway-core-release-auth", workflow)
+        self.assertIn("trap 'rm -f -- \"$auth_config\"' EXIT", workflow)
+        self.assertIn("--config \"$auth_config\"", workflow)
+        self.assertIn("rm -f -- \"$auth_config\"", workflow)
+        self.assertNotIn('--header "Authorization: Bearer $CORE_READ_TOKEN"', workflow)
         self.assertIn("sha256sum --check --strict", workflow)
         self.assertIn(
             "--signer-workflow Latchway/latchway/.github/workflows/"
