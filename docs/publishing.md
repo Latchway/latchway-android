@@ -121,9 +121,12 @@ in the Publisher Portal and explicitly publish or drop it. The protected tag
 workflow sets `LATCHWAY_CENTRAL_PUBLISHING_TYPE=automatic`; Sonatype then
 publishes only after validation succeeds. The workflow waits for Maven Central,
 downloads every POM, Gradle module, AAR, sources JAR, and Javadoc JAR, validates
-their SHA-256 sidecars and the presence of OpenPGP signatures, and creates the
-GitHub release only after that public-registry proof succeeds. Maven Central
-versions are immutable.
+their SHA-256 sidecars and the presence of OpenPGP signatures, and compares
+every primary artifact byte for byte with the reproducible repository assembled
+earlier in the run. It reconciles the GitHub release only after that proof.
+Existing release assets are downloaded and compared, missing draft assets are
+attached without `--clobber`, and mismatched final state is rejected. Maven
+Central versions are immutable.
 
 The `maven-central` GitHub environment must protect the four publication
 secrets and require an authorized reviewer. The release tag must be annotated,
@@ -139,11 +142,14 @@ apply. Do not use that override for the final release.
 
 ## Failure recovery
 
-If any upload fails, do not retry blindly: the compatibility service may retain
-an incomplete repository for the uploader's account and network address. Find
-the repository through the Portal OSSRH staging manual search endpoint, inspect
-it, and either transfer or drop the exact repository before retrying. Never
-publish a partially validated deployment.
+Rerunning an exact promotion is safe once any module is visible publicly: the
+script does not upload again, waits for all five coordinates, and requires all
+public bytes to match the reviewed repository. If an upload fails before any
+module becomes visible, do not retry blindly: the compatibility service may
+retain an incomplete repository for the uploader's account and network address.
+Find it through the Portal OSSRH staging manual search endpoint, inspect it, and
+either transfer or drop that exact repository before retrying. Never publish a
+partially validated or ambiguous deployment.
 
 Current official references:
 

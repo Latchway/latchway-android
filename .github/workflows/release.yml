@@ -196,15 +196,16 @@ jobs:
         run: scripts/publish-central.sh
       - name: Verify the immutable public artifacts
         env:
+          LATCHWAY_CENTRAL_EXPECTED_REPOSITORY: ${{ github.workspace }}/build/release/repository
           LATCHWAY_RELEASE_VERSION: ${{ needs.promote.outputs.version }}
         run: scripts/verify-central-release.sh "$LATCHWAY_RELEASE_VERSION"
-      - name: Create the GitHub release after registry verification
+      - name: Reconcile immutable GitHub release assets after registry verification
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$RELEASE_TAG" \
-            --verify-tag \
+          python3 scripts/reconcile-github-release.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --tag "$RELEASE_TAG" \
             --title "$RELEASE_TAG" \
-            --generate-notes \
-            build/release/latchway-android-*-maven-repository.zip \
+            "build/release/latchway-android-${{ needs.promote.outputs.version }}-maven-repository.zip" \
             build/release/SHA256SUMS

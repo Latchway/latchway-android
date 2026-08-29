@@ -7,10 +7,6 @@ script_directory=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repository_root=$(cd "$script_directory/.." && pwd)
 
 : "${LATCHWAY_RELEASE_VERSION:?Set LATCHWAY_RELEASE_VERSION to the exact release version}"
-: "${LATCHWAY_MAVEN_CENTRAL_USERNAME:?Set the Maven Central Portal token username}"
-: "${LATCHWAY_MAVEN_CENTRAL_PASSWORD:?Set the Maven Central Portal token password}"
-: "${LATCHWAY_SIGNING_KEY:?Set the ASCII-armored OpenPGP private key}"
-: "${LATCHWAY_SIGNING_PASSWORD:?Set the OpenPGP private-key password}"
 
 namespace=${LATCHWAY_MAVEN_CENTRAL_NAMESPACE:-dev.latchway}
 publishing_type=${LATCHWAY_CENTRAL_PUBLISHING_TYPE:-user_managed}
@@ -47,19 +43,61 @@ if [[ "$tag_commit" != "$head_commit" && "${LATCHWAY_ALLOW_UNTAGGED_RELEASE_FOR_
   exit 1
 fi
 
-central_pom="https://repo1.maven.org/maven2/dev/latchway/latchway-core/$LATCHWAY_RELEASE_VERSION/latchway-core-$LATCHWAY_RELEASE_VERSION.pom"
-central_status=$(curl --silent --show-error --location --head --output /dev/null --write-out '%{http_code}' "$central_pom")
-case "$central_status" in
-  404) ;;
-  200)
-    echo "dev.latchway:latchway-core:$LATCHWAY_RELEASE_VERSION already exists on Maven Central" >&2
+modules=(latchway-core latchway-okhttp latchway-play-integrity latchway-firebase-auth latchway-bom)
+central_base_url=${LATCHWAY_MAVEN_CENTRAL_BASE_URL:-https://repo1.maven.org/maven2/dev/latchway}
+published_modules=0
+for module in "${modules[@]}"; do
+  central_pom="$central_base_url/$module/$LATCHWAY_RELEASE_VERSION/$module-$LATCHWAY_RELEASE_VERSION.pom"
+  if ! central_status=$(curl \
+    --silent \
+    --show-error \
+    --location \
+    --head \
+    --output /dev/null \
+    --write-out '%{http_code}' \
+    "$central_pom"); then
+    echo "Could not prove Maven Central version availability for $module" >&2
     exit 1
-    ;;
-  *)
-    echo "Could not prove Maven Central version availability (HTTP $central_status)" >&2
-    exit 1
-    ;;
-esac
+  fi
+  case "$central_status" in
+    200) published_modules=$((published_modules + 1)) ;;
+    404) ;;
+    *)
+      echo "Could not prove Maven Central version availability for $module (HTTP $central_status)" >&2
+      exit 1
+      ;;
+  esac
+done
+
+if (( published_modules > 0 )); then
+  # A partially propagated public release is never uploaded again. Wait for
+  # every coordinate and compare every immutable artifact with the exact local
+  # repository assembled by the reproducibility gate.
+  expected_repository="$repository_root/build/release/repository"
+  if [[ ! -d "$expected_repository/dev/latchway" ]]; then
+    (
+      unset LATCHWAY_MAVEN_CENTRAL_USERNAME
+      unset LATCHWAY_MAVEN_CENTRAL_PASSWORD
+      unset LATCHWAY_SIGNING_KEY
+      unset LATCHWAY_SIGNING_PASSWORD
+      LATCHWAY_PUBLICATION_TEST_VERSION="$LATCHWAY_RELEASE_VERSION" \
+        "$script_directory/verify-local-publication.sh"
+    )
+    expected_repository="$repository_root/build/publication-test-repository"
+  fi
+  LATCHWAY_CENTRAL_EXPECTED_REPOSITORY="$expected_repository" \
+    "$script_directory/verify-central-release.sh" "$LATCHWAY_RELEASE_VERSION"
+  echo "dev.latchway:$LATCHWAY_RELEASE_VERSION already exists with the exact reviewed artifacts"
+  exit 0
+fi
+
+if [[ -z "${LATCHWAY_MAVEN_CENTRAL_USERNAME:-}" ||
+      -z "${LATCHWAY_MAVEN_CENTRAL_PASSWORD:-}" ||
+      -z "${LATCHWAY_SIGNING_KEY:-}" ||
+      -z "${LATCHWAY_SIGNING_PASSWORD:-}" ]]; then
+  echo "Maven Central credentials and in-memory OpenPGP signing material are required for a new coordinate" >&2
+  exit 1
+fi
 
 (
   unset LATCHWAY_MAVEN_CENTRAL_USERNAME

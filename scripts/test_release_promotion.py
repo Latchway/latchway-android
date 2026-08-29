@@ -434,6 +434,19 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertLess(dependency, publish)
         self.assertIn("needs: [promote, verify, android, ios]", workflow)
 
+    def test_android_release_is_resumable_without_overwriting_public_state(self) -> None:
+        if REPOSITORY_ID != "android":
+            self.skipTest("Android-only release recovery")
+        workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        publish = workflow.index("scripts/publish-central.sh")
+        public_verification = workflow.index("scripts/verify-central-release.sh")
+        reconciliation = workflow.index("python3 scripts/reconcile-github-release.py")
+        self.assertLess(publish, public_verification)
+        self.assertLess(public_verification, reconciliation)
+        self.assertIn("LATCHWAY_CENTRAL_EXPECTED_REPOSITORY", workflow)
+        self.assertNotIn("--clobber", workflow)
+        self.assertNotIn("gh release create", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

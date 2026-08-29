@@ -16,6 +16,14 @@ if [[ ! "$attempts" =~ ^[0-9]+$ || "$attempts" -lt 1 || "$attempts" -gt 180 ||
 fi
 
 base_url=${LATCHWAY_MAVEN_CENTRAL_BASE_URL:-https://repo1.maven.org/maven2/dev/latchway}
+expected_repository=${LATCHWAY_CENTRAL_EXPECTED_REPOSITORY:-}
+if [[ -n "$expected_repository" ]]; then
+  [[ -d "$expected_repository/dev/latchway" ]] || {
+    echo "Expected Maven repository does not contain dev/latchway" >&2
+    exit 64
+  }
+  expected_repository=$(cd "$expected_repository" && pwd -P)
+fi
 temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/latchway-central-verify.XXXXXX")
 cleanup() {
   rm -rf "$temporary_root"
@@ -63,6 +71,17 @@ for module in "${modules[@]}"; do
       echo "Maven Central signature is missing for $name" >&2
       exit 1
     }
+    if [[ -n "$expected_repository" ]]; then
+      expected_file="$expected_repository/dev/latchway/$module/$version/$name"
+      [[ -f "$expected_file" ]] || {
+        echo "Reviewed Maven repository is missing $name" >&2
+        exit 1
+      }
+      cmp -s "$expected_file" "$temporary_root/$name" || {
+        echo "Maven Central artifact differs from the reviewed release byte-for-byte: $name" >&2
+        exit 1
+      }
+    fi
   done
   grep -Fq "<tag>v$version</tag>" "$temporary_root/$module-$version.pom" || {
     echo "Maven Central POM metadata is invalid for $module" >&2
@@ -70,4 +89,8 @@ for module in "${modules[@]}"; do
   }
 done
 
-echo "Verified signed dev.latchway:$version artifacts on Maven Central"
+if [[ -n "$expected_repository" ]]; then
+  echo "Verified exact reviewed dev.latchway:$version artifacts on Maven Central"
+else
+  echo "Verified signed dev.latchway:$version artifacts on Maven Central"
+fi
