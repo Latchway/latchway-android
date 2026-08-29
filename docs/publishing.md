@@ -51,6 +51,11 @@ Before running it:
 2. Generate a Publisher Portal user token.
 3. Provision an OpenPGP key whose public key is available from a supported key
    server.
+   Store its uppercase 40-character fingerprint in the protected
+   `LATCHWAY_MAVEN_SIGNING_FINGERPRINT` environment variable. The release
+   workflow exports only the minimal public half as an attested immutable
+   release asset; private signing material is never written to the repository
+   or release assets.
 4. Update every source and Gradle version declaration, run the repository test
    suite, commit the exact release, and create the matching `vVERSION` tag.
 5. Start from a clean worktree. Do not place credentials or signing material in
@@ -120,10 +125,11 @@ The script defaults to `user_managed`, so an operator can inspect the deployment
 in the Publisher Portal and explicitly publish or drop it. The protected tag
 workflow sets `LATCHWAY_CENTRAL_PUBLISHING_TYPE=automatic`; Sonatype then
 publishes only after validation succeeds. The workflow waits for Maven Central,
-downloads every POM, Gradle module, AAR, sources JAR, and Javadoc JAR, validates
-their SHA-256 sidecars and the presence of OpenPGP signatures, and compares
-every primary artifact byte for byte with the reproducible repository assembled
-earlier in the run. It reconciles the GitHub release only after that proof.
+downloads every POM, Gradle module, AAR, sources JAR, and Javadoc JAR, compares
+every primary artifact and MD5/SHA-1/SHA-256/SHA-512 sidecar byte for byte with
+the reproducible repository assembled earlier in the run, and cryptographically
+verifies every detached OpenPGP signature against the reviewed public key and
+pinned fingerprint. It reconciles the GitHub release only after that proof.
 Existing release assets are downloaded and compared, missing draft assets are
 attached without `--clobber`, and mismatched final state is rejected. Maven
 Central versions are immutable.

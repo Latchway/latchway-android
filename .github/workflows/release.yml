@@ -151,6 +151,7 @@ jobs:
     env:
       RELEASE_COMMIT: ${{ needs.promote.outputs.commit }}
       RELEASE_TAG: ${{ needs.promote.outputs.tag }}
+      LATCHWAY_CENTRAL_SIGNING_FINGERPRINT: ${{ vars.LATCHWAY_MAVEN_SIGNING_FINGERPRINT }}
     steps:
       - name: Check out exact promoted Android source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -181,10 +182,30 @@ jobs:
         run: |
           export LATCHWAY_VERSION="${RELEASE_TAG#v}"
           scripts/build-release-artifacts.sh "$LATCHWAY_VERSION"
+      - name: Export the reviewed public half of the Maven signing key
+        shell: bash
+        env:
+          LATCHWAY_SIGNING_KEY: ${{ secrets.LATCHWAY_SIGNING_KEY }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$LATCHWAY_CENTRAL_SIGNING_FINGERPRINT" =~ ^[0-9A-F]{40}$ ]]
+          keyring=$(mktemp -d "$RUNNER_TEMP/latchway-release-public-key.XXXXXX")
+          chmod 700 "$keyring"
+          printf '%s' "$LATCHWAY_SIGNING_KEY" | gpg --batch --homedir "$keyring" --import >/dev/null 2>&1
+          observed=$(gpg --batch --homedir "$keyring" --with-colons --fingerprint \
+            "$LATCHWAY_CENTRAL_SIGNING_FINGERPRINT" | awk -F: '$1 == "fpr" {print $10; exit}')
+          test "$observed" = "$LATCHWAY_CENTRAL_SIGNING_FINGERPRINT"
+          gpg --batch --homedir "$keyring" --armor --export-options export-minimal \
+            --export "$LATCHWAY_CENTRAL_SIGNING_FINGERPRINT" \
+            > build/release/latchway-maven-signing-public-key.asc
+          test -s build/release/latchway-maven-signing-public-key.asc
+          (cd build/release && shasum -a 256 latchway-maven-signing-public-key.asc >> SHA256SUMS)
       - name: Attest the exact release bundle
         uses: actions/attest-build-provenance@e4d4f7c39adfa4c260fb5c147f0622000aa14b99 # v4.0.0
         with:
-          subject-path: build/release/latchway-android-*-maven-repository.zip
+          subject-path: |
+            build/release/latchway-android-*-maven-repository.zip
+            build/release/latchway-maven-signing-public-key.asc
       - name: Publish signed artifacts to Maven Central
         env:
           LATCHWAY_RELEASE_VERSION: ${{ needs.promote.outputs.version }}
@@ -193,10 +214,12 @@ jobs:
           LATCHWAY_MAVEN_CENTRAL_PASSWORD: ${{ secrets.LATCHWAY_MAVEN_CENTRAL_PASSWORD }}
           LATCHWAY_SIGNING_KEY: ${{ secrets.LATCHWAY_SIGNING_KEY }}
           LATCHWAY_SIGNING_PASSWORD: ${{ secrets.LATCHWAY_SIGNING_PASSWORD }}
+          LATCHWAY_CENTRAL_SIGNING_PUBLIC_KEY: ${{ github.workspace }}/build/release/latchway-maven-signing-public-key.asc
         run: scripts/publish-central.sh
       - name: Verify the immutable public artifacts
         env:
           LATCHWAY_CENTRAL_EXPECTED_REPOSITORY: ${{ github.workspace }}/build/release/repository
+          LATCHWAY_CENTRAL_SIGNING_PUBLIC_KEY: ${{ github.workspace }}/build/release/latchway-maven-signing-public-key.asc
           LATCHWAY_RELEASE_VERSION: ${{ needs.promote.outputs.version }}
         run: scripts/verify-central-release.sh "$LATCHWAY_RELEASE_VERSION"
       - name: Reconcile immutable GitHub release assets after registry verification
@@ -208,4 +231,5 @@ jobs:
             --tag "$RELEASE_TAG" \
             --title "$RELEASE_TAG" \
             "build/release/latchway-android-${{ needs.promote.outputs.version }}-maven-repository.zip" \
-            build/release/SHA256SUMS
+            build/release/SHA256SUMS \
+            build/release/latchway-maven-signing-public-key.asc

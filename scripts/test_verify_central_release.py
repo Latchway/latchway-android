@@ -30,6 +30,7 @@ class CentralVerificationTests(unittest.TestCase):
         self.expected = self.root / "expected"
         self.bin = self.root / "bin"
         self.bin.mkdir()
+        self.fingerprint = "A" * 40
         self.write_executable("curl", """#!/bin/bash
 set -euo pipefail
 output=
@@ -50,6 +51,16 @@ if [[ "$head_only" == true ]]; then
 fi
 cp "$source" "$output"
 """)
+        self.write_executable("gpg", """#!/bin/bash
+set -euo pipefail
+if [[ " $* " == *" --with-colons "* ]]; then
+  printf 'fpr:::::::::AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:\n'
+elif [[ " $* " == *" --status-fd "* ]]; then
+  printf '[GNUPG:] VALIDSIG AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA 2026-01-01 0 4 0 1 10 00 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n'
+fi
+""")
+        self.public_key = self.root / "public-key.asc"
+        self.public_key.write_text("reviewed public key\n", encoding="utf-8")
         for module in MODULES:
             extensions = ["pom", "module", "sources.jar", "javadoc.jar"]
             if module != "latchway-bom":
@@ -68,6 +79,10 @@ cp "$source" "$output"
                 expected = self.expected / relative
                 expected.parent.mkdir(parents=True, exist_ok=True)
                 expected.write_bytes(payload)
+                for algorithm in ("md5", "sha1", "sha256", "sha512"):
+                    expected.with_name(f"{expected.name}.{algorithm}").write_bytes(
+                        (self.remote / relative).with_name(f"{name}.{algorithm}").read_bytes()
+                    )
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -81,7 +96,10 @@ cp "$source" "$output"
     def write_artifact(path: Path, payload: bytes) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(payload)
-        path.with_name(f"{path.name}.sha256").write_text(hashlib.sha256(payload).hexdigest(), encoding="utf-8")
+        for algorithm in ("md5", "sha1", "sha256", "sha512"):
+            path.with_name(f"{path.name}.{algorithm}").write_text(
+                hashlib.new(algorithm, payload).hexdigest(), encoding="utf-8"
+            )
         path.with_name(f"{path.name}.asc").write_text("-----BEGIN PGP SIGNATURE-----\ntest\n", encoding="utf-8")
 
     def invoke(self, *, expected: bool = True) -> subprocess.CompletedProcess[str]:
@@ -96,6 +114,8 @@ cp "$source" "$output"
         environment.pop("LATCHWAY_CENTRAL_EXPECTED_REPOSITORY", None)
         if expected:
             environment["LATCHWAY_CENTRAL_EXPECTED_REPOSITORY"] = str(self.expected)
+            environment["LATCHWAY_CENTRAL_SIGNING_FINGERPRINT"] = self.fingerprint
+            environment["LATCHWAY_CENTRAL_SIGNING_PUBLIC_KEY"] = str(self.public_key)
         return subprocess.run(
             ["/bin/bash", str(SCRIPT), "1.0.0"],
             cwd=ROOT,
@@ -109,7 +129,7 @@ cp "$source" "$output"
     def test_exact_public_repository_matches_reviewed_bytes(self) -> None:
         result = self.invoke()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("exact reviewed", result.stdout)
+        self.assertIn('"primary_artifacts_byte_identical": true', result.stdout)
 
     def test_self_consistent_but_different_public_artifact_is_rejected(self) -> None:
         path = self.remote / "dev/latchway/latchway-core/1.0.0/latchway-core-1.0.0.aar"
@@ -123,7 +143,7 @@ cp "$source" "$output"
         self.write_artifact(path, b"different but internally checksummed bytes\n")
         result = self.invoke(expected=False)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("signed dev.latchway", result.stdout)
+        self.assertIn('"signature_files_present": true', result.stdout)
 
     def test_invalid_public_checksum_is_rejected_before_byte_comparison(self) -> None:
         checksum = self.remote / "dev/latchway/latchway-core/1.0.0/latchway-core-1.0.0.aar.sha256"
