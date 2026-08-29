@@ -68,6 +68,7 @@ jobs:
           LATCHWAY_GATEWAY_DEPLOYMENT_PUBLIC_KEY_SHA256: ${{ vars.LATCHWAY_GATEWAY_DEPLOYMENT_PUBLIC_KEY_SHA256 }}
           LATCHWAY_GATEWAY_MINIMUM_TRUST_LEVEL: ${{ vars.LATCHWAY_GATEWAY_MINIMUM_TRUST_LEVEL }}
           LATCHWAY_ENVIRONMENT: ${{ vars.LATCHWAY_ENVIRONMENT }}
+          LATCHWAY_ERROR_MAPPING_FEATURE: ${{ vars.LATCHWAY_ERROR_MAPPING_FEATURE }}
           LATCHWAY_RUN_ID: play-integrity-${{ github.run_id }}-${{ github.run_attempt }}
         run: scripts/run-physical-play-integrity.sh
       - name: Attest the validated profile and evidence

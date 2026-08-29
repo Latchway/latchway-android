@@ -381,6 +381,30 @@
           "request_id": {
             "type": "string",
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$"
+          },
+          "mapped_error_type": {
+            "enum": ["swift_latchway_problem", "kotlin_latchway_exception", "react_native_latchway_error"]
+          },
+          "credential_before_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "credential_after_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "installation_before_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "installation_after_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "protocol_version_sent": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2147483647
           }
         }
       }

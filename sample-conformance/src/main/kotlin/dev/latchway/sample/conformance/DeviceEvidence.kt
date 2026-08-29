@@ -35,6 +35,12 @@ internal data class EvidenceTest(
     val httpStatus: Int? = null,
     val errorCode: String? = null,
     val requestId: String? = null,
+    val mappedErrorType: String? = null,
+    val credentialBeforeSha256: String? = null,
+    val credentialAfterSha256: String? = null,
+    val installationBeforeSha256: String? = null,
+    val installationAfterSha256: String? = null,
+    val protocolVersionSent: Int? = null,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("id", id)
@@ -43,6 +49,12 @@ internal data class EvidenceTest(
         .putOptional("http_status", httpStatus)
         .putOptional("error_code", errorCode)
         .putOptional("request_id", requestId)
+        .putOptional("mapped_error_type", mappedErrorType)
+        .putOptional("credential_before_sha256", credentialBeforeSha256)
+        .putOptional("credential_after_sha256", credentialAfterSha256)
+        .putOptional("installation_before_sha256", installationBeforeSha256)
+        .putOptional("installation_after_sha256", installationAfterSha256)
+        .putOptional("protocol_version_sent", protocolVersionSent)
 
     companion object {
         fun passed(id: String): EvidenceTest = EvidenceTest(id, "passed")

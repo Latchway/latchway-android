@@ -28,7 +28,12 @@ One run records:
   `LICENSED`, and device/strong-device trust rather than a testing verdict;
 - a hardware-backed Android Keystore DPoP key and active session;
 - one authorized request, exact replay rejected as HTTP 401 `dpop_replayed`,
-  and a bit-tampered proof rejected as HTTP 401 `dpop_invalid`; and
+  and a bit-tampered proof rejected as HTTP 401 `dpop_invalid`;
+- typed `LatchwayException` mapping of HTTP 404 `feature_not_found`, an explicit
+  refresh whose redacted pre/post access-credential hashes differ while the
+  installation hash stays fixed, rejection of protocol version `0` as HTTP 426
+  `protocol_version_unsupported`, and post-revocation enforcement as HTTP 403
+  `installation_revoked`; and
 - a bounded streamed AI request and quota response.
 
 The normalized app-recognition and licensing fields are accepted only when the
@@ -79,6 +84,7 @@ LATCHWAY_GATEWAY_DEPLOYMENT_PUBLIC_KEY_PATH
 LATCHWAY_GATEWAY_DEPLOYMENT_PUBLIC_KEY_SHA256
 LATCHWAY_GATEWAY_MINIMUM_TRUST_LEVEL # device_verified or strong_device_verified
 LATCHWAY_ENVIRONMENT
+LATCHWAY_ERROR_MAPPING_FEATURE        # canonical feature ID guaranteed absent
 ```
 
 Configure `LATCHWAY_ANDROID_DEVICE_SERIAL` as a protected secret. The serial is
@@ -86,7 +92,8 @@ used only to select adb transport and is not written to evidence.
 
 Build the Play candidate with the matching non-secret Gradle properties,
 including the exact source/core/contract/gateway pins, `playTrack`, package,
-version, signing-certificate digest, and `requireLicensed=true`. The live app
+version, signing-certificate digest, `errorMappingFeature`, and
+`requireLicensed=true`. The live app
 compares embedded expected pins with its runtime package and signer before any
 report can pass.
 

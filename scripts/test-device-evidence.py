@@ -46,6 +46,7 @@ def profile() -> dict:
         "gateway_deployment_key_id": "gateway-key-1",
         "gateway_deployment_statement_sha256": "a" * 64,
         "gateway_deployment_public_key_sha256": "c" * 64,
+        "error_mapping_feature": "missing_feature",
     }
     return {
         "schema_version": device_evidence.PROFILE_VERSION,
@@ -87,6 +88,19 @@ def observation() -> dict:
             entry.update(http_status=401, error_code="dpop_replayed", request_id="request-replay-1234")
         elif name == "tampered_dpop_rejected":
             entry.update(http_status=401, error_code="dpop_invalid", request_id="request-tamper-1234")
+        elif name == "canonical_error_mapping":
+            entry.update(http_status=404, error_code="feature_not_found", request_id="request-mapping-1234", mapped_error_type="kotlin_latchway_exception")
+        elif name == "installation_revocation":
+            entry.update(http_status=403, error_code="installation_revoked", request_id="request-revoked-1234")
+        elif name == "protocol_version_rejection":
+            entry.update(http_status=426, error_code="protocol_version_unsupported", request_id="request-protocol-1234", protocol_version_sent=0)
+        elif name == "session_refresh_rotation":
+            entry.update(
+                credential_before_sha256="a" * 64,
+                credential_after_sha256="b" * 64,
+                installation_before_sha256="c" * 64,
+                installation_after_sha256="c" * 64,
+            )
         tests.append(entry)
     return {
         "schema_version": device_evidence.OBSERVATION_VERSION,
@@ -217,6 +231,21 @@ class DeviceEvidenceTest(unittest.TestCase):
         replay["error_code"] = "dpop_invalid"
         result = device_evidence.build_evidence(current, profile(), self.schema)
         self.assertFalse(result["release_eligible"])
+
+    def test_refresh_error_mapping_revocation_and_protocol_require_concrete_results(self) -> None:
+        cases = (
+            ("canonical_error_mapping", "mapped_error_type", "swift_latchway_problem"),
+            ("session_refresh_rotation", "credential_after_sha256", "a" * 64),
+            ("installation_revocation", "error_code", "session_revoked"),
+            ("protocol_version_rejection", "protocol_version_sent", 1),
+        )
+        for test_id, field, value in cases:
+            with self.subTest(test_id=test_id, field=field):
+                current = observation()
+                record = next(item for item in current["tests"] if item["id"] == test_id)
+                record[field] = value
+                result = device_evidence.build_evidence(current, profile(), self.schema)
+                self.assertFalse(result["release_eligible"])
 
     def test_secret_shaped_values_are_rejected(self) -> None:
         current = observation()

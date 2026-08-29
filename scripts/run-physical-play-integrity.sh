@@ -28,6 +28,7 @@ required=(
   LATCHWAY_GATEWAY_DEPLOYMENT_PUBLIC_KEY_SHA256
   LATCHWAY_GATEWAY_MINIMUM_TRUST_LEVEL
   LATCHWAY_ENVIRONMENT
+  LATCHWAY_ERROR_MAPPING_FEATURE
   LATCHWAY_RUN_ID
 )
 for variable_name in "${required[@]}"; do
@@ -274,6 +275,7 @@ expected = {
     "gateway_deployment_key_id": os.environ["LATCHWAY_GATEWAY_DEPLOYMENT_KEY_ID"],
     "gateway_deployment_statement_sha256": os.environ["LATCHWAY_GATEWAY_DEPLOYMENT_STATEMENT_SHA256"],
     "gateway_deployment_public_key_sha256": os.environ["LATCHWAY_GATEWAY_DEPLOYMENT_PUBLIC_KEY_SHA256"],
+    "error_mapping_feature": os.environ["LATCHWAY_ERROR_MAPPING_FEATURE"],
 }
 profile = {
     "schema_version": "latchway.physical-device-profile.v1",

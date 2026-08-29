@@ -9,6 +9,8 @@ import android.widget.TextView
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
 import dev.latchway.core.KeyBacking
+import dev.latchway.core.LatchwayErrorCode
+import dev.latchway.core.LatchwayException
 import dev.latchway.firebaseauth.FirebaseIdentityTokenProvider
 import dev.latchway.okhttp.LatchwayClient
 import dev.latchway.okhttp.LatchwayConfiguration
@@ -33,6 +35,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+import java.util.Locale
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -170,6 +174,59 @@ public class ConformanceActivity : Activity() {
                 tamper.status == 401 && tamper.problemCode == "dpop_invalid",
             )
 
+            try {
+                client.quota(values.errorMappingFeature)
+                tests += EvidenceTest.failed("canonical_error_mapping")
+            } catch (error: LatchwayException) {
+                tests += EvidenceTest(
+                    id = "canonical_error_mapping",
+                    status = pass(
+                        error.code == LatchwayErrorCode.FEATURE_NOT_FOUND &&
+                            error.httpStatus == 404 && error.requestId != null,
+                    ),
+                    httpStatus = error.httpStatus,
+                    errorCode = error.code.wireValue,
+                    requestId = error.requestId,
+                    mappedErrorType = "kotlin_latchway_exception",
+                )
+            }
+
+            val beforeRefresh = client.authorize(quotaRequest, values.feature)
+            val beforeRefreshDiagnostics = client.diagnostics()
+            client.refresh()
+            val afterRefresh = client.authorize(quotaRequest, values.feature)
+            val afterRefreshDiagnostics = client.diagnostics()
+            val beforeCredential = credentialHash(beforeRefresh)
+            val afterCredential = credentialHash(afterRefresh)
+            val beforeInstallation = sha256(beforeRefreshDiagnostics.installationId)
+            val afterInstallation = sha256(afterRefreshDiagnostics.installationId)
+            tests += EvidenceTest(
+                id = "session_refresh_rotation",
+                status = pass(
+                    beforeCredential != afterCredential && beforeInstallation == afterInstallation,
+                ),
+                credentialBeforeSha256 = beforeCredential,
+                credentialAfterSha256 = afterCredential,
+                installationBeforeSha256 = beforeInstallation,
+                installationAfterSha256 = afterInstallation,
+            )
+
+            val unsupported = rawClient.newCall(
+                client.authorize(quotaRequest, values.feature).newBuilder()
+                    .header("X-Latchway-Protocol-Version", "0")
+                    .build(),
+            ).awaitBounded(MAX_CONTROL_BYTES)
+            tests += EvidenceTest(
+                id = "protocol_version_rejection",
+                status = pass(
+                    unsupported.status == 426 && unsupported.problemCode == "protocol_version_unsupported",
+                ),
+                httpStatus = unsupported.status,
+                errorCode = unsupported.problemCode,
+                requestId = unsupported.requestId,
+                protocolVersionSent = 0,
+            )
+
             val streamRequest = Request.Builder()
                 .url(values.streamUrl())
                 .header("Content-Type", "application/json")
@@ -218,6 +275,14 @@ public class ConformanceActivity : Activity() {
                     diagnostics.installationStatus.isNotBlank() &&
                         diagnostics.sessionExpiresAt.isNotBlank() && acceptedProductionPolicy,
                 ),
+            )
+
+            val postRevocation = client.authorize(quotaRequest, values.feature)
+            client.revokeCurrentInstallation()
+            val revoked = rawClient.newCall(postRevocation).awaitBounded(MAX_CONTROL_BYTES)
+            tests += revoked.test(
+                "installation_revocation",
+                revoked.status == 403 && revoked.problemCode == "installation_revoked",
             )
         } catch (error: CancellationException) {
             throw error
@@ -280,6 +345,10 @@ public class ConformanceActivity : Activity() {
             "tampered_dpop_rejected",
             "streamed_request",
             "quota",
+            "canonical_error_mapping",
+            "session_refresh_rotation",
+            "installation_revocation",
+            "protocol_version_rejection",
         )
     }
 }
@@ -289,6 +358,7 @@ internal data class ConformanceValues(
     val applicationId: String,
     val environment: String,
     val feature: String,
+    val errorMappingFeature: String,
     val model: String,
     val cloudProjectNumber: Long,
     val playTrack: String,
@@ -325,6 +395,8 @@ internal data class ConformanceValues(
             val applicationId = metadata.required("dev.latchway.APPLICATION_ID", APPLICATION_ID)
             val environment = metadata.required("dev.latchway.ENVIRONMENT", IDENTIFIER)
             val feature = metadata.required("dev.latchway.FEATURE", IDENTIFIER)
+            val errorMappingFeature = metadata.required("dev.latchway.ERROR_MAPPING_FEATURE", IDENTIFIER)
+            require(errorMappingFeature != feature)
             val model = metadata.getString("dev.latchway.MODEL")?.takeIf(::isValidModel)
                 ?: error("model is invalid")
             val cloudProject = metadata.getString("dev.latchway.CLOUD_PROJECT_NUMBER")
@@ -364,12 +436,14 @@ internal data class ConformanceValues(
                 "gateway_deployment_key_id" to deploymentKeyId,
                 "gateway_deployment_statement_sha256" to deploymentStatementHash,
                 "gateway_deployment_public_key_sha256" to deploymentPublicKeyHash,
+                "error_mapping_feature" to errorMappingFeature,
             )
             ConformanceValues(
                 gateway,
                 applicationId,
                 environment,
                 feature,
+                errorMappingFeature,
                 model,
                 cloudProject,
                 playTrack,
@@ -401,6 +475,15 @@ private fun android.os.Bundle.required(name: String, pattern: Regex): String =
     getString(name)?.takeIf(pattern::matches) ?: error("$name is invalid")
 
 private fun pass(value: Boolean): String = if (value) "passed" else "failed"
+
+private fun credentialHash(request: Request): String {
+    val value = requireNotNull(request.header("Authorization")).also { require(it.startsWith("DPoP ")) }
+    return sha256(value)
+}
+
+private fun sha256(value: String): String = MessageDigest.getInstance("SHA-256")
+    .digest(value.toByteArray(StandardCharsets.UTF_8))
+    .joinToString("") { "%02x".format(Locale.US, it.toInt() and 0xff) }
 
 private data class SafeResponse(
     val status: Int,

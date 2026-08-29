@@ -16,6 +16,7 @@ android {
         manifestPlaceholders["latchwayApplicationId"] = providers.gradleProperty("latchway.applicationId").orElse("").get()
         manifestPlaceholders["latchwayEnvironment"] = providers.gradleProperty("latchway.environment").orElse("").get()
         manifestPlaceholders["latchwayFeature"] = providers.gradleProperty("latchway.feature").orElse("").get()
+        manifestPlaceholders["latchwayErrorMappingFeature"] = providers.gradleProperty("latchway.errorMappingFeature").orElse("").get()
         manifestPlaceholders["latchwayModel"] = providers.gradleProperty("latchway.model").orElse("").get()
         manifestPlaceholders["latchwayCloudProjectNumber"] = providers.gradleProperty("latchway.cloudProjectNumber").orElse("0").get()
         manifestPlaceholders["latchwayPlayTrack"] = providers.gradleProperty("latchway.playTrack").orElse("").get()

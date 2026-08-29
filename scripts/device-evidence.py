@@ -47,6 +47,7 @@ PLATFORM_POLICY = {
             "gateway_deployment_key_id",
             "gateway_deployment_statement_sha256",
             "gateway_deployment_public_key_sha256",
+            "error_mapping_feature",
         },
         "tests": {
             "physical_device",
@@ -61,6 +62,10 @@ PLATFORM_POLICY = {
             "streamed_request",
             "quota",
             "app_attest_assertion",
+            "canonical_error_mapping",
+            "session_refresh_rotation",
+            "installation_revocation",
+            "protocol_version_rejection",
         },
     },
     "android_play_integrity": {
@@ -87,6 +92,7 @@ PLATFORM_POLICY = {
             "gateway_deployment_key_id",
             "gateway_deployment_statement_sha256",
             "gateway_deployment_public_key_sha256",
+            "error_mapping_feature",
         },
         "tests": {
             "physical_device",
@@ -100,6 +106,10 @@ PLATFORM_POLICY = {
             "tampered_dpop_rejected",
             "streamed_request",
             "quota",
+            "canonical_error_mapping",
+            "session_refresh_rotation",
+            "installation_revocation",
+            "protocol_version_rejection",
         },
     },
     "react_native_ios_app_attest": {
@@ -127,6 +137,7 @@ PLATFORM_POLICY = {
             "gateway_deployment_key_id",
             "gateway_deployment_statement_sha256",
             "gateway_deployment_public_key_sha256",
+            "error_mapping_feature",
         },
         "tests": {
             "physical_device",
@@ -140,6 +151,10 @@ PLATFORM_POLICY = {
             "tampered_dpop_rejected",
             "streamed_request",
             "quota",
+            "canonical_error_mapping",
+            "session_refresh_rotation",
+            "installation_revocation",
+            "protocol_version_rejection",
         },
     },
     "react_native_android_play_integrity": {
@@ -168,6 +183,7 @@ PLATFORM_POLICY = {
             "gateway_deployment_key_id",
             "gateway_deployment_statement_sha256",
             "gateway_deployment_public_key_sha256",
+            "error_mapping_feature",
         },
         "tests": {
             "physical_device",
@@ -181,6 +197,10 @@ PLATFORM_POLICY = {
             "tampered_dpop_rejected",
             "streamed_request",
             "quota",
+            "canonical_error_mapping",
+            "session_refresh_rotation",
+            "installation_revocation",
+            "protocol_version_rejection",
         },
     },
 }
@@ -551,6 +571,9 @@ def semantic_errors(evidence: dict[str, Any], profile: dict[str, Any]) -> list[s
     negative_expectations = {
         "dpop_replay_rejected": (401, "dpop_replayed"),
         "tampered_dpop_rejected": (401, "dpop_invalid"),
+        "canonical_error_mapping": (404, "feature_not_found"),
+        "installation_revocation": (403, "installation_revoked"),
+        "protocol_version_rejection": (426, "protocol_version_unsupported"),
     }
     for name, (status, code) in negative_expectations.items():
         test = tests_by_name.get(name, {})
@@ -558,6 +581,31 @@ def semantic_errors(evidence: dict[str, Any], profile: dict[str, Any]) -> list[s
             errors.append(f"{name} did not record canonical HTTP {status} {code}")
         if not isinstance(test.get("request_id"), str):
             errors.append(f"{name} did not retain a redacted request ID")
+
+    mapped_error_types = {
+        "ios_app_attest": "swift_latchway_problem",
+        "android_play_integrity": "kotlin_latchway_exception",
+        "react_native_ios_app_attest": "react_native_latchway_error",
+        "react_native_android_play_integrity": "react_native_latchway_error",
+    }
+    mapping = tests_by_name.get("canonical_error_mapping", {})
+    if mapping.get("mapped_error_type") != mapped_error_types[platform]:
+        errors.append("canonical_error_mapping did not record the platform SDK's typed error")
+
+    protocol = tests_by_name.get("protocol_version_rejection", {})
+    if protocol.get("protocol_version_sent") != 0:
+        errors.append("protocol_version_rejection did not record the rejected version")
+
+    rotation = tests_by_name.get("session_refresh_rotation", {})
+    before_credential = rotation.get("credential_before_sha256")
+    after_credential = rotation.get("credential_after_sha256")
+    before_installation = rotation.get("installation_before_sha256")
+    after_installation = rotation.get("installation_after_sha256")
+    hashes = (before_credential, after_credential, before_installation, after_installation)
+    if any(re.fullmatch(r"[0-9a-f]{64}", str(value)) is None for value in hashes):
+        errors.append("session_refresh_rotation did not retain four redacted SHA-256 observations")
+    elif before_credential == after_credential or before_installation != after_installation:
+        errors.append("session_refresh_rotation did not rotate credentials for the same installation")
 
     redaction = evidence.get("redaction", {})
     if not isinstance(redaction, dict) or any(value is not False for value in redaction.values()):
