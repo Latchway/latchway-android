@@ -44,6 +44,7 @@ jobs:
           python3 scripts/test_central_deployment_record.py
           python3 scripts/test_publish_central_policy.py
           python3 scripts/test_reconcile_github_release.py
+          python3 scripts/test_verify_github_release_attestation.py
           python3 scripts/test_release_promotion.py
           bash -n scripts/build-central-portal-bundle.sh \
             scripts/publish-central.sh scripts/verify-central-release.sh

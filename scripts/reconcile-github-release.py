@@ -20,6 +20,8 @@ from urllib.parse import quote
 
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 TAG = re.compile(r"^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$")
+COMMIT = re.compile(r"^[0-9a-f]{40}$")
+GIT_OBJECT = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 MAXIMUM_ASSET_BYTES = 2 * 1024 * 1024 * 1024
 
 
@@ -35,8 +37,24 @@ class Asset:
     sha256: str
 
 
+@dataclass(frozen=True)
+class TagBinding:
+    tag: str
+    tag_object_sha: str
+    commit: str
+    message: str
+
+
+@dataclass(frozen=True)
+class ReconcileResult:
+    uploaded: set[str]
+    tag_binding: TagBinding
+
+
 class Client(Protocol):
     def immutability_enabled(self, repository: str) -> bool: ...
+
+    def tag_binding(self, repository: str, tag: str) -> TagBinding: ...
 
     def release(self, repository: str, tag: str) -> dict[str, Any] | None: ...
 
@@ -105,6 +123,48 @@ class GitHubClient:
             raise RuntimeError("GitHub returned invalid release JSON.") from error
         if not isinstance(value, dict):
             raise RuntimeError("GitHub returned an invalid release document.")
+        return value
+
+    def tag_binding(self, repository: str, tag: str) -> TagBinding:
+        reference = self._api_json(f"repos/{repository}/git/ref/tags/{quote(tag, safe='')}", "tag reference")
+        target = reference.get("object")
+        if not isinstance(target, dict) or target.get("type") != "tag":
+            raise Rejected("Promoted release tag is not an annotated tag object.")
+        tag_object_sha = target.get("sha")
+        if not isinstance(tag_object_sha, str) or GIT_OBJECT.fullmatch(tag_object_sha) is None:
+            raise Rejected("Promoted annotated tag object has an invalid identifier.")
+        tag_object = self._api_json(f"repos/{repository}/git/tags/{tag_object_sha}", "annotated tag object")
+        commit = tag_object.get("object")
+        if not isinstance(commit, dict) or commit.get("type") != "commit":
+            raise Rejected("Promoted annotated tag does not target a commit.")
+        commit_sha = commit.get("sha")
+        message = tag_object.get("message")
+        if tag_object.get("tag") != tag or not isinstance(commit_sha, str) or COMMIT.fullmatch(commit_sha) is None:
+            raise Rejected("Promoted annotated tag identity or commit is invalid.")
+        if not isinstance(message, str):
+            raise Rejected("Promoted annotated tag message is invalid.")
+        return TagBinding(tag=tag, tag_object_sha=tag_object_sha, commit=commit_sha, message=message)
+
+    @staticmethod
+    def _api_json(endpoint: str, description: str) -> dict[str, Any]:
+        result = subprocess.run(
+            [
+                "gh", "api", "-H", "Accept: application/vnd.github+json",
+                "-H", "X-GitHub-Api-Version: 2026-03-10", endpoint,
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"GitHub {description} lookup failed: {result.stderr.strip()}")
+        try:
+            value = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise RuntimeError(f"GitHub returned invalid {description} JSON.") from error
+        if not isinstance(value, dict):
+            raise RuntimeError(f"GitHub returned an invalid {description} document.")
         return value
 
     def create(self, repository: str, tag: str, title: str, prerelease: bool) -> None:
@@ -254,11 +314,18 @@ def reconcile(
     prerelease: bool,
     assets: list[Asset],
     client: Client,
+    expected_commit: str,
+    expected_tag_message: str,
+    expected_tag_object_sha: str | None = None,
     draft_only: bool = False,
     allowed_asset_names: set[str] | None = None,
-) -> set[str]:
+) -> ReconcileResult:
     if not client.immutability_enabled(repository):
         raise Rejected("GitHub immutable releases are not enabled for this repository.")
+    binding = validate_tag_binding(
+        client, repository, tag, expected_commit, expected_tag_message,
+        expected_tag_object_sha,
+    )
     local_names = {asset.name for asset in assets}
     expected_names = set(allowed_asset_names or local_names)
     if not local_names.issubset(expected_names):
@@ -316,12 +383,19 @@ def reconcile(
                 raise Rejected("Final GitHub release does not contain the fixed asset set.")
             if release.get("immutable") is not True:
                 raise Rejected("Final GitHub release is not immutable.")
-        return uploaded
+        return ReconcileResult(uploaded=uploaded, tag_binding=binding)
 
     if set(observed) != expected_names:
         raise Rejected("GitHub draft release does not contain the complete immutable asset set.")
 
     if release["draft"]:
+        # Re-read the remote annotated object immediately before the one-way
+        # immutable publication transition. A moved ref or rewritten message
+        # must leave only a recoverable draft, never a frozen wrong release.
+        binding = validate_tag_binding(
+            client, repository, tag, expected_commit, expected_tag_message,
+            binding.tag_object_sha,
+        )
         client.finalize(repository, tag, prerelease)
 
     final = client.release(repository, tag)
@@ -340,7 +414,80 @@ def reconcile(
         raise Rejected("Final GitHub release does not contain the complete immutable asset set.")
     for asset in assets:
         verify_remote_asset(client, repository, asset, final_assets[asset.name])
-    return uploaded
+    return ReconcileResult(uploaded=uploaded, tag_binding=binding)
+
+
+def validate_tag_binding(
+    client: Client,
+    repository: str,
+    tag: str,
+    expected_commit: str,
+    expected_message: str,
+    expected_tag_object_sha: str | None = None,
+) -> TagBinding:
+    binding = client.tag_binding(repository, tag)
+    if binding.tag != tag or binding.commit != expected_commit:
+        raise Rejected("Remote annotated tag no longer targets the promoted release commit.")
+    if binding.message != expected_message:
+        raise Rejected("Remote annotated tag message no longer matches the promotion evidence.")
+    if expected_tag_object_sha is not None and binding.tag_object_sha != expected_tag_object_sha:
+        raise Rejected("Remote annotated tag object changed after its durable release binding was created.")
+    return binding
+
+
+def load_tag_message(path: Path) -> str:
+    metadata = path.lstat()
+    if not stat.S_ISREG(metadata.st_mode) or path.is_symlink() or not 0 < metadata.st_size <= 64 * 1024:
+        raise Rejected("Expected annotated tag message must be a bounded regular file.")
+    try:
+        message = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as error:
+        raise Rejected("Expected annotated tag message is not UTF-8.") from error
+    if "\x00" in message or "\r" in message or not message:
+        raise Rejected("Expected annotated tag message contains unsafe bytes.")
+    return message
+
+
+def tag_binding_payload(binding: TagBinding) -> dict[str, str]:
+    return {
+        "schema": "latchway.github-release-tag-binding.v1",
+        "tag": binding.tag,
+        "tag_object_sha": binding.tag_object_sha,
+        "commit": binding.commit,
+        "message_sha256": hashlib.sha256(binding.message.encode("utf-8")).hexdigest(),
+    }
+
+
+def load_tag_binding(path: Path, tag: str, commit: str, message: str) -> str:
+    metadata = path.lstat()
+    if not stat.S_ISREG(metadata.st_mode) or path.is_symlink() or not 0 < metadata.st_size <= 64 * 1024:
+        raise Rejected("Existing tag-binding proof must be a bounded regular file.")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise Rejected("Existing tag-binding proof is invalid JSON.") from error
+    expected = tag_binding_payload(TagBinding(tag, "", commit, message))
+    expected.pop("tag_object_sha")
+    if not isinstance(value, dict) or set(value) != set(expected) | {"tag_object_sha"}:
+        raise Rejected("Existing tag-binding proof schema is invalid.")
+    for field, expected_value in expected.items():
+        if value.get(field) != expected_value:
+            raise Rejected(f"Existing tag-binding proof {field} is invalid.")
+    tag_object_sha = value.get("tag_object_sha")
+    if not isinstance(tag_object_sha, str) or GIT_OBJECT.fullmatch(tag_object_sha) is None:
+        raise Rejected("Existing tag-binding proof object identifier is invalid.")
+    return tag_object_sha
+
+
+def write_tag_binding(path: Path, binding: TagBinding) -> None:
+    payload = tag_binding_payload(binding)
+    encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    if path.exists():
+        if path.is_symlink() or path.read_bytes() != encoded:
+            raise Rejected("Existing immutable tag-binding proof differs from the current remote tag.")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(encoded)
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -348,6 +495,9 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY"))
     parser.add_argument("--tag", required=True)
     parser.add_argument("--title", required=True)
+    parser.add_argument("--expected-commit", required=True)
+    parser.add_argument("--expected-tag-message-file", type=Path, required=True)
+    parser.add_argument("--tag-binding-output", type=Path)
     parser.add_argument("--prerelease", action="store_true")
     parser.add_argument("--draft-only", action="store_true")
     parser.add_argument("--allowed-asset-name", action="append", default=[])
@@ -359,6 +509,8 @@ def parse_arguments() -> argparse.Namespace:
         parser.error("--repository must be an owner/repository name")
     if TAG.fullmatch(arguments.tag) is None:
         parser.error("--tag must be a canonical semantic-version release tag")
+    if COMMIT.fullmatch(arguments.expected_commit) is None:
+        parser.error("--expected-commit must be a lowercase 40-character commit")
     if not arguments.title or "\n" in arguments.title or "\r" in arguments.title:
         parser.error("--title must be a non-empty single line")
     for name in arguments.allowed_asset_name:
@@ -378,21 +530,35 @@ def parse_arguments() -> argparse.Namespace:
 def main() -> int:
     arguments = parse_arguments()
     try:
+        expected_tag_message = load_tag_message(arguments.expected_tag_message_file)
+        expected_tag_object_sha = None
+        if arguments.tag_binding_output is not None and arguments.tag_binding_output.exists():
+            expected_tag_object_sha = load_tag_binding(
+                arguments.tag_binding_output,
+                arguments.tag,
+                arguments.expected_commit,
+                expected_tag_message,
+            )
         assets = inspect_assets(arguments.assets)
-        uploaded = reconcile(
+        result = reconcile(
             repository=arguments.repository,
             tag=arguments.tag,
             title=arguments.title,
             prerelease=arguments.prerelease,
             assets=assets,
             client=GitHubClient(),
+            expected_commit=arguments.expected_commit,
+            expected_tag_message=expected_tag_message,
+            expected_tag_object_sha=expected_tag_object_sha,
             draft_only=arguments.draft_only,
             allowed_asset_names=set(arguments.allowed_asset_name) or None,
         )
+        if arguments.tag_binding_output is not None:
+            write_tag_binding(arguments.tag_binding_output, result.tag_binding)
         if arguments.github_output is not None:
             arguments.github_output.parent.mkdir(parents=True, exist_ok=True)
             with arguments.github_output.open("a", encoding="utf-8") as output:
-                output.write(f"guard_uploaded={'true' if arguments.guard_asset in uploaded else 'false'}\n")
+                output.write(f"guard_uploaded={'true' if arguments.guard_asset in result.uploaded else 'false'}\n")
     except (OSError, Rejected, RuntimeError) as error:
         print(f"release reconciliation rejected: {error}", file=sys.stderr)
         return 1

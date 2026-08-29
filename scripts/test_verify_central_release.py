@@ -11,6 +11,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from test_central_fixture import write_zip
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/verify-central-release.sh"
@@ -153,6 +155,9 @@ fi
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('"primary_artifacts_byte_identical": true', result.stdout)
         evidence = json.loads(result.stdout)
+        self.assertEqual(evidence["schema_version"], 2)
+        self.assertRegex(evidence["public_manifest_sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(len(evidence["public_manifest"]), 144)
         self.assertEqual(evidence["files"][0]["gpg_status"]["primary_fingerprint"], self.fingerprint)
         self.assertEqual(len(evidence["files"][0]["checksums"]), 4)
         self.assertIn("signature_armored", evidence["files"][0])
@@ -218,7 +223,9 @@ fi
     def test_release_proof_hash_binds_exact_intent_record_and_published_status(self) -> None:
         helper = ROOT / "scripts/central-deployment-record.py"
         archive = self.root / "release.zip"
-        archive.write_bytes(b"reviewed archive")
+        portal_bundle = self.root / "portal.zip"
+        write_zip(archive, self.expected, signed=False)
+        write_zip(portal_bundle, self.expected, signed=True)
         intent = self.root / "maven-central-upload-intent.json"
         record = self.root / "maven-central-deployment.json"
         raw_status = self.root / "raw-status.json"
@@ -226,9 +233,10 @@ fi
         subprocess.run([
             "python3", str(helper), "create-intent",
             "--repository", str(self.expected), "--archive", str(archive),
+            "--portal-bundle", str(portal_bundle),
             "--public-key", str(self.public_key), "--source-commit", "a" * 40,
             "--tag", "v1.0.0", "--version", "1.0.0", "--namespace", "dev.latchway",
-            "--publishing-type", "automatic", "--output", str(intent),
+            "--publishing-type", "user_managed", "--output", str(intent),
         ], check=True)
         deployment_id = "28570f16-da32-4c14-bd2e-c1acc0782365"
         subprocess.run([
@@ -265,7 +273,7 @@ fi
         status.write_text(json.dumps(status_value), encoding="utf-8")
         rejected = self.invoke(extra_environment=environment)
         self.assertNotEqual(rejected.returncode, 0)
-        self.assertIn("not PUBLISHED", rejected.stderr)
+        self.assertIn("not complete and PUBLISHED", rejected.stderr)
 
 
 if __name__ == "__main__":

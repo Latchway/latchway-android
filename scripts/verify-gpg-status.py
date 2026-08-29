@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import stat
 import sys
 from pathlib import Path
 
@@ -13,6 +14,8 @@ from pathlib import Path
 FINGERPRINT = re.compile(r"^[0-9A-F]{40}$")
 STATUS_TAG = re.compile(r"^[A-Z][A-Z0-9_]*$")
 MAXIMUM_STATUS_BYTES = 64 * 1024
+APPROVED_PUBLIC_KEY_ALGORITHMS = {"1", "3", "19", "22", "27"}
+REQUIRED_HASH_ALGORITHM = "10"  # OpenPGP SHA-512.
 ALLOWED_TAGS = {
     "NEWSIG",
     "KEY_CONSIDERED",
@@ -50,8 +53,13 @@ class Rejected(RuntimeError):
 
 
 def _bounded_text(path: Path) -> str:
-    metadata = path.stat()
-    if metadata.st_size <= 0 or metadata.st_size > MAXIMUM_STATUS_BYTES:
+    metadata = path.lstat()
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or path.is_symlink()
+        or metadata.st_size <= 0
+        or metadata.st_size > MAXIMUM_STATUS_BYTES
+    ):
         raise Rejected("GnuPG status output has an invalid size")
     try:
         text = path.read_text(encoding="utf-8")
@@ -116,6 +124,15 @@ def validate(path: Path, expected_primary_fingerprint: str) -> dict[str, object]
         raise Rejected("GnuPG primary fingerprint is invalid")
     if primary_fingerprint != expected_primary_fingerprint:
         raise Rejected("GnuPG signature does not descend from the pinned primary key")
+    signature_version, reserved, public_key_algorithm, hash_algorithm, signature_class = valid[4:9]
+    if signature_version not in {"4", "5", "6"} or reserved != "0":
+        raise Rejected("GnuPG VALIDSIG protocol fields are invalid")
+    if public_key_algorithm not in APPROVED_PUBLIC_KEY_ALGORITHMS:
+        raise Rejected("GnuPG signature uses an unapproved public-key algorithm")
+    if hash_algorithm != REQUIRED_HASH_ALGORITHM:
+        raise Rejected("GnuPG signature does not use the pinned SHA-512 digest")
+    if signature_class != "00":
+        raise Rejected("GnuPG signature is not a detached binary document signature")
 
     goodsig = by_tag["GOODSIG"][0]
     if len(goodsig) < 2 or not re.fullmatch(r"(?:[0-9A-F]{16}|[0-9A-F]{40})", goodsig[0]):
@@ -129,8 +146,8 @@ def validate(path: Path, expected_primary_fingerprint: str) -> dict[str, object]
     for considered in by_tag["KEY_CONSIDERED"]:
         if len(considered) != 2 or considered[0] != expected_primary_fingerprint:
             raise Rejected("GnuPG considered a key other than the pinned primary key")
-        if considered[1] not in {"0", "1"}:
-            raise Rejected("GnuPG KEY_CONSIDERED flags are invalid")
+        if considered[1] != "0":
+            raise Rejected("GnuPG KEY_CONSIDERED did not select the usable pinned key")
 
     signature_id = by_tag["SIG_ID"][0]
     if len(signature_id) != 3 or any(not field for field in signature_id):
@@ -147,6 +164,8 @@ def validate(path: Path, expected_primary_fingerprint: str) -> dict[str, object]
         "schema_version": 1,
         "primary_fingerprint": primary_fingerprint,
         "signing_fingerprint": signing_fingerprint,
+        "public_key_algorithm": public_key_algorithm,
+        "hash_algorithm": hash_algorithm,
         "status_lines": [line for _, _, line in parsed],
     }
 

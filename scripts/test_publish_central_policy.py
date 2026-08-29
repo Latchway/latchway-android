@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline tests for resumable, single-upload Maven Central publication."""
+"""End-to-end tests for recoverable, least-privilege Central publication."""
 
 from __future__ import annotations
 
@@ -10,6 +10,8 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+
+from test_central_fixture import create_release_inputs
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,43 +30,49 @@ class CentralPublicationPolicyTests(unittest.TestCase):
         shutil.copy2(SCRIPT, self.scripts / SCRIPT.name)
         shutil.copy2(RECORD_HELPER, self.scripts / RECORD_HELPER.name)
         self.release = self.root / "build/release"
-        repository = self.release / "repository"
-        artifact = repository / "dev/latchway/latchway-core/1.0.0/latchway-core-1.0.0.pom"
-        artifact.parent.mkdir(parents=True)
-        artifact.write_text("reviewed\n", encoding="utf-8")
-        self.archive = self.release / "latchway-android-1.0.0-maven-repository.zip"
-        self.archive.write_bytes(b"archive")
-        self.public_key = self.release / "latchway-maven-signing-public-key.asc"
-        self.public_key.write_bytes(b"public key")
+        self.repository, self.archive, self.portal_bundle, self.public_key = create_release_inputs(self.release)
         self.intent = self.release / "maven-central-upload-intent.json"
         self.record = self.release / "maven-central-deployment.json"
         self.status_evidence = self.release / "maven-central-deployment-status.json"
-        subprocess.run(
-            [
-                "python3", str(self.scripts / RECORD_HELPER.name), "create-intent",
-                "--repository", str(repository), "--archive", str(self.archive),
-                "--public-key", str(self.public_key), "--source-commit", COMMIT,
-                "--tag", "v1.0.0", "--version", "1.0.0", "--namespace", "dev.latchway",
-                "--publishing-type", "automatic", "--output", str(self.intent),
-            ],
-            check=True,
-        )
+        subprocess.run([
+            "python3", str(self.scripts / RECORD_HELPER.name), "create-intent",
+            "--repository", str(self.repository), "--archive", str(self.archive),
+            "--portal-bundle", str(self.portal_bundle), "--public-key", str(self.public_key),
+            "--source-commit", COMMIT, "--tag", "v1.0.0", "--version", "1.0.0",
+            "--namespace", "dev.latchway", "--publishing-type", "user_managed",
+            "--output", str(self.intent),
+        ], check=True)
         intent_value = json.loads(self.intent.read_text(encoding="utf-8"))
+        self.deployment_name = intent_value["deployment_name"]
         self.portal_status = self.root / "portal-status.json"
         self.portal_status.write_text(json.dumps({
             "deploymentId": DEPLOYMENT_ID,
-            "deploymentName": intent_value["deployment_name"],
+            "deploymentName": self.deployment_name,
             "deploymentState": "PUBLISHED",
             "purls": intent_value["expected_purls"],
         }), encoding="utf-8")
+        self.empty_listing = self.root / "empty-listing.json"
+        self.match_listing = self.root / "match-listing.json"
+        self.empty_listing.write_text(json.dumps({
+            "deployments": [], "page": 0, "pageSize": 100, "pageCount": 0, "totalResultCount": 0,
+        }), encoding="utf-8")
+        self.match_listing.write_text(json.dumps({
+            "deployments": [{"deploymentId": DEPLOYMENT_ID, "deploymentName": self.deployment_name}],
+            "page": 0, "pageSize": 100, "pageCount": 1, "totalResultCount": 1,
+        }), encoding="utf-8")
         self.bin = self.root / "bin"
         self.bin.mkdir()
-        self.verify_log = self.root / "verify.log"
         self.upload_log = self.root / "upload.log"
+        self.list_log = self.root / "list.log"
         self.status_log = self.root / "status.log"
-        self.bundle_log = self.root / "bundle.log"
+        self.publish_log = self.root / "publish.log"
+        self.secret_leak_log = self.root / "secret-leak.log"
         self.write_executable("git", """#!/bin/bash
 set -euo pipefail
+if [[ -n "${LATCHWAY_MAVEN_CENTRAL_USERNAME:-}${LATCHWAY_MAVEN_CENTRAL_PASSWORD:-}" ]]; then
+  printf 'git inherited Portal credentials\n' >>"$FAKE_SECRET_LEAK_LOG"
+  exit 9
+fi
 case "$*" in
   *"status --porcelain") exit 0 ;;
   *"rev-parse HEAD") printf '%040d\n' 0 ;;
@@ -83,30 +91,47 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 case "$url" in
+  */api/v1/publisher/deployments)
+    printf 'list\n' >>"$FAKE_LIST_LOG"
+    count=$(wc -l <"$FAKE_LIST_LOG" | tr -d ' ')
+    if (( count >= FAKE_LIST_MATCH_AT )); then cp "$FAKE_MATCH_LISTING" "$output"; else cp "$FAKE_EMPTY_LISTING" "$output"; fi
+    printf '200'
+    ;;
   */api/v1/publisher/upload\\?*)
     printf 'upload\n' >>"$FAKE_UPLOAD_LOG"
+    if [[ "$FAKE_UPLOAD_OUTCOME" == transport-failure ]]; then exit 28; fi
     printf '%s\n' "$FAKE_DEPLOYMENT_ID" >"$output"
     printf '201'
     ;;
   */api/v1/publisher/status\\?id=*)
     printf 'status\n' >>"$FAKE_STATUS_LOG"
-    cp "$FAKE_PORTAL_STATUS" "$output"
+    count=$(wc -l <"$FAKE_STATUS_LOG" | tr -d ' ')
+    if [[ "$FAKE_STATUS_FIRST_VALIDATED" == true && "$count" == 1 ]]; then
+      sed 's/"PUBLISHED"/"VALIDATED"/' "$FAKE_PORTAL_STATUS" >"$output"
+    else
+      cp "$FAKE_PORTAL_STATUS" "$output"
+    fi
     printf '200'
     ;;
-  *) printf '%s' "$FAKE_CENTRAL_STATUS" ;;
+  */api/v1/publisher/deployment/*)
+    printf 'publish\n' >>"$FAKE_PUBLISH_LOG"
+    : >"$output"
+    printf '204'
+    ;;
+  *)
+    if [[ -n "${LATCHWAY_MAVEN_CENTRAL_USERNAME:-}${LATCHWAY_MAVEN_CENTRAL_PASSWORD:-}" ]]; then
+      printf 'public curl inherited Portal credentials\n' >>"$FAKE_SECRET_LEAK_LOG"
+      exit 9
+    fi
+    printf '%s' "$FAKE_CENTRAL_STATUS"
+    ;;
 esac
 """)
         self.write_executable_at(self.scripts / "verify-central-release.sh", """#!/bin/bash
 set -euo pipefail
 test "$1" = 1.0.0
 test "$LATCHWAY_CENTRAL_EXPECTED_REPOSITORY" = "$FAKE_EXPECTED_REPOSITORY"
-printf 'verified\n' >>"$FAKE_VERIFY_LOG"
-""")
-        self.write_executable_at(self.scripts / "build-central-portal-bundle.sh", """#!/bin/bash
-set -euo pipefail
-test "$1" = 1.0.0
-printf 'bundle\n' >"$2"
-printf 'built\n' >>"$FAKE_BUNDLE_LOG"
+printf '{"schema_version":2,"registry":"maven_central","namespace":"dev.latchway","version":"1.0.0","public_manifest_sha256":"%064d"}\n' 0
 """)
 
     def tearDown(self) -> None:
@@ -121,46 +146,57 @@ printf 'built\n' >>"$FAKE_BUNDLE_LOG"
         path.chmod(0o755)
 
     def create_record(self) -> None:
-        subprocess.run(
-            [
-                "python3", str(self.scripts / RECORD_HELPER.name), "create-record",
-                "--intent", str(self.intent), "--deployment-id", DEPLOYMENT_ID,
-                "--output", str(self.record),
-            ],
-            check=True,
-        )
+        subprocess.run([
+            "python3", str(self.scripts / RECORD_HELPER.name), "create-record",
+            "--intent", str(self.intent), "--deployment-id", DEPLOYMENT_ID,
+            "--output", str(self.record),
+        ], check=True)
 
     def invoke(
         self,
-        central_status: str,
+        central_status: str = "404",
         *,
-        allow_upload: bool = False,
         credentials: bool = False,
+        intent_fresh: bool = False,
         stop_after_record: bool = False,
+        publish_after_validation: bool = False,
+        list_match_at: int = 999,
+        upload_outcome: str = "success",
+        status_first_validated: bool = False,
+        signing_secrets: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         environment = {
             **os.environ,
             "PATH": f"{self.bin}:/usr/bin:/bin",
             "LATCHWAY_RELEASE_VERSION": "1.0.0",
-            "LATCHWAY_CENTRAL_PUBLISHING_TYPE": "automatic",
+            "LATCHWAY_CENTRAL_PUBLISHING_TYPE": "user_managed",
             "LATCHWAY_CENTRAL_UPLOAD_INTENT": str(self.intent),
             "LATCHWAY_CENTRAL_DEPLOYMENT_RECORD": str(self.record),
             "LATCHWAY_CENTRAL_DEPLOYMENT_STATUS": str(self.status_evidence),
+            "LATCHWAY_CENTRAL_PORTAL_BUNDLE": str(self.portal_bundle),
             "LATCHWAY_CENTRAL_SIGNING_PUBLIC_KEY": str(self.public_key),
-            "LATCHWAY_CENTRAL_ALLOW_NEW_UPLOAD": str(allow_upload).lower(),
+            "LATCHWAY_CENTRAL_INTENT_FRESH": str(intent_fresh).lower(),
             "LATCHWAY_CENTRAL_STOP_AFTER_RECORD": str(stop_after_record).lower(),
+            "LATCHWAY_CENTRAL_PUBLISH_AFTER_VALIDATION": str(publish_after_validation).lower(),
             "LATCHWAY_CENTRAL_SKIP_LOCAL_GATES": "true",
-            "LATCHWAY_CENTRAL_STATUS_ATTEMPTS": "1",
+            "LATCHWAY_CENTRAL_STATUS_ATTEMPTS": "2",
             "LATCHWAY_CENTRAL_STATUS_DELAY_SECONDS": "1",
+            "LATCHWAY_CENTRAL_ADOPTION_ATTEMPTS": "1",
+            "LATCHWAY_CENTRAL_ADOPTION_DELAY_SECONDS": "1",
             "FAKE_CENTRAL_STATUS": central_status,
             "FAKE_DEPLOYMENT_ID": DEPLOYMENT_ID,
             "FAKE_PORTAL_STATUS": str(self.portal_status),
-            "FAKE_EXPECTED_REPOSITORY": str(self.release / "repository"),
-            "FAKE_VERIFY_LOG": str(self.verify_log),
+            "FAKE_EXPECTED_REPOSITORY": str(self.repository),
+            "FAKE_EMPTY_LISTING": str(self.empty_listing),
+            "FAKE_MATCH_LISTING": str(self.match_listing),
+            "FAKE_LIST_MATCH_AT": str(list_match_at),
+            "FAKE_UPLOAD_OUTCOME": upload_outcome,
+            "FAKE_STATUS_FIRST_VALIDATED": str(status_first_validated).lower(),
             "FAKE_UPLOAD_LOG": str(self.upload_log),
+            "FAKE_LIST_LOG": str(self.list_log),
             "FAKE_STATUS_LOG": str(self.status_log),
-            "FAKE_BUNDLE_LOG": str(self.bundle_log),
-            "LATCHWAY_ALLOW_UNTAGGED_RELEASE_FOR_STAGING": "false",
+            "FAKE_PUBLISH_LOG": str(self.publish_log),
+            "FAKE_SECRET_LEAK_LOG": str(self.secret_leak_log),
         }
         for name in (
             "LATCHWAY_MAVEN_CENTRAL_USERNAME", "LATCHWAY_MAVEN_CENTRAL_PASSWORD",
@@ -171,72 +207,92 @@ printf 'built\n' >>"$FAKE_BUNDLE_LOG"
             environment.update({
                 "LATCHWAY_MAVEN_CENTRAL_USERNAME": "token-user",
                 "LATCHWAY_MAVEN_CENTRAL_PASSWORD": "token-password",
-                "LATCHWAY_SIGNING_KEY": "test-private-key",
-                "LATCHWAY_SIGNING_PASSWORD": "test-passphrase",
             })
+        if signing_secrets:
+            environment.update({"LATCHWAY_SIGNING_KEY": "private", "LATCHWAY_SIGNING_PASSWORD": "pass"})
         return subprocess.run(
-            ["/bin/bash", str(self.scripts / SCRIPT.name)],
-            cwd=self.root,
-            env=environment,
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
+            ["/bin/bash", str(self.scripts / SCRIPT.name)], cwd=self.root, env=environment,
+            check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
 
-    def test_existing_coordinates_are_verified_without_credentials_or_upload(self) -> None:
+    def test_public_coordinates_create_complete_manifest_bound_adoption(self) -> None:
         result = self.invoke("200")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.verify_log.read_text(encoding="utf-8"), "verified\n")
+        record = json.loads(self.record.read_text(encoding="utf-8"))
+        status = json.loads(self.status_evidence.read_text(encoding="utf-8"))
+        self.assertEqual(record["record_kind"], "public_registry_adoption")
+        self.assertEqual(status["deployment_state"], "PUBLISHED")
+        self.assertEqual(record["public_manifest_sha256"], "0" * 64)
         self.assertFalse(self.upload_log.exists())
+        self.status_evidence.unlink()
+        resumed = self.invoke("200")
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        self.assertTrue(self.status_evidence.is_file())
 
-    def test_existing_intent_without_deployment_id_fails_closed(self) -> None:
-        result = self.invoke("404", credentials=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("refusing a second upload", result.stderr)
-        self.assertFalse(self.upload_log.exists())
-
-    def test_new_upload_requires_explicit_single_use_authorization_and_records_id(self) -> None:
-        result = self.invoke("404", allow_upload=True, credentials=True, stop_after_record=True)
+    def test_pre_post_and_successful_post_crash_windows_are_recoverable(self) -> None:
+        # Fresh/pre-POST path: authoritative listing is empty, so upload once.
+        result = self.invoke(credentials=True, intent_fresh=True, stop_after_record=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.upload_log.read_text(encoding="utf-8"), "upload\n")
-        self.assertEqual(self.bundle_log.read_text(encoding="utf-8"), "built\n")
-        record = json.loads(self.record.read_text(encoding="utf-8"))
-        self.assertEqual(record["deployment_id"], DEPLOYMENT_ID)
-        self.assertFalse(self.status_log.exists())
+        self.assertEqual(json.loads(self.record.read_text())["deployment_id"], DEPLOYMENT_ID)
 
-    def test_stop_after_record_resume_is_read_only_and_does_not_require_credentials(self) -> None:
-        self.create_record()
-        result = self.invoke("404", stop_after_record=True)
+        # A rerun after POST but before record durability adopts the exact name.
+        self.record.unlink()
+        self.upload_log.unlink()
+        self.list_log.unlink()
+        result = self.invoke(credentials=True, stop_after_record=True, list_match_at=1)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(DEPLOYMENT_ID, result.stdout)
+        self.assertIn("Adopted exact existing", result.stdout)
         self.assertFalse(self.upload_log.exists())
-        self.assertFalse(self.status_log.exists())
 
-    def test_rerun_queries_recorded_deployment_and_never_uploads_again(self) -> None:
-        self.create_record()
-        result = self.invoke("404", allow_upload=True, credentials=True)
+        # An ambiguous transport result is reconciled, never blindly retried.
+        self.record.unlink()
+        self.list_log.unlink()
+        result = self.invoke(
+            credentials=True, intent_fresh=True, stop_after_record=True,
+            list_match_at=2, upload_outcome="transport-failure",
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("PUBLISHED", result.stdout)
-        self.assertFalse(self.upload_log.exists())
-        self.assertFalse(self.bundle_log.exists())
-        evidence = json.loads(self.status_evidence.read_text(encoding="utf-8"))
-        self.assertEqual(evidence["deployment_id"], DEPLOYMENT_ID)
+        self.assertEqual(self.upload_log.read_text(encoding="utf-8"), "upload\n")
 
-    def test_wrong_portal_deployment_status_fails_closed_without_upload(self) -> None:
+    def test_record_is_durable_before_explicit_publish_and_reruns_never_upload(self) -> None:
         self.create_record()
-        value = json.loads(self.portal_status.read_text(encoding="utf-8"))
-        value["deploymentId"] = "38570f16-da32-4c14-bd2e-c1acc0782365"
-        self.portal_status.write_text(json.dumps(value), encoding="utf-8")
-        result = self.invoke("404", credentials=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("deployment ID mismatch", result.stderr)
+        result = self.invoke(
+            credentials=True, publish_after_validation=True, status_first_validated=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.publish_log.read_text(encoding="utf-8"), "publish\n")
+        self.assertEqual(self.status_log.read_text(encoding="utf-8"), "status\nstatus\n")
+        self.assertFalse(self.upload_log.exists())
+        self.assertEqual(json.loads(self.status_evidence.read_text())["deployment_state"], "PUBLISHED")
+
+    def test_portal_credentials_are_removed_before_unrelated_subprocesses(self) -> None:
+        result = self.invoke(credentials=True, intent_fresh=True, stop_after_record=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.secret_leak_log.exists())
+
+    def test_signing_material_is_rejected_by_network_publisher(self) -> None:
+        result = self.invoke(credentials=True, signing_secrets=True)
+        self.assertEqual(result.returncode, 64)
+        self.assertIn("must not be exposed", result.stderr)
         self.assertFalse(self.upload_log.exists())
 
-    def test_unknown_registry_state_never_uploads(self) -> None:
-        result = self.invoke("503", allow_upload=True, credentials=True)
+    def test_unknown_registry_state_and_ambiguous_duplicate_listing_fail_closed(self) -> None:
+        result = self.invoke("503", credentials=True, intent_fresh=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("HTTP 503", result.stderr)
+        self.assertFalse(self.upload_log.exists())
+
+        duplicate = json.loads(self.match_listing.read_text())
+        duplicate["deployments"].append({
+            "deploymentId": "38570f16-da32-4c14-bd2e-c1acc0782365",
+            "deploymentName": self.deployment_name,
+        })
+        duplicate["totalResultCount"] = 2
+        self.match_listing.write_text(json.dumps(duplicate))
+        result = self.invoke(credentials=True, list_match_at=1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("multiple deployments", result.stderr)
         self.assertFalse(self.upload_log.exists())
 
 

@@ -456,7 +456,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("maven-central-release-evidence.json", workflow)
         self.assertIn("maven-central-deployment.json", workflow)
         self.assertIn("maven-central-deployment-status.json", workflow)
-        self.assertIn("LATCHWAY_CENTRAL_ALLOW_NEW_UPLOAD", workflow)
+        self.assertIn("LATCHWAY_CENTRAL_INTENT_FRESH", workflow)
+        self.assertIn("LATCHWAY_CENTRAL_PUBLISH_AFTER_VALIDATION", workflow)
         self.assertIn("--guard-asset maven-central-upload-intent.json", workflow)
         self.assertIn("LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN", workflow)
         self.assertIn('"repos/$GITHUB_REPOSITORY/immutable-releases"', workflow)
@@ -466,7 +467,9 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn('gh release verify-asset "$RELEASE_TAG" "$asset"', workflow)
         for asset in (
             "maven-repository.zip",
+            "central-portal.zip",
             "SHA256SUMS",
+            "github-release-tag-binding.json",
             "latchway-maven-signing-public-key.asc",
             "maven-central-upload-intent.json",
             "maven-central-deployment.json",
@@ -474,6 +477,16 @@ class ReleaseWorkflowTests(unittest.TestCase):
             "maven-central-release-evidence.json",
         ):
             self.assertIn(asset, workflow[automatic_attestation:])
+        self.assertIn("--expected-commit \"$RELEASE_COMMIT\"", workflow)
+        self.assertIn("--expected-tag-message-file \"$RUNNER_TEMP/sdk-tag-message.txt\"", workflow)
+        self.assertIn("scripts/verify-github-release-attestation.py", workflow)
+        portal_bundle = workflow.index("Build the pre-reviewed signed Central Portal bundle")
+        intent = workflow.index("Create the single-use Maven Central upload intent")
+        self.assertLess(portal_bundle, intent)
+        upload_step = workflow[workflow.index("Upload once or resume the exact Portal deployment"):durable_id]
+        self.assertNotIn("LATCHWAY_SIGNING_KEY", upload_step)
+        self.assertNotIn("LATCHWAY_SIGNING_PASSWORD", upload_step)
+        self.assertIn("publishingType=USER_MANAGED", (ROOT / "scripts/publish-central.sh").read_text())
         self.assertNotIn("--clobber", workflow)
         self.assertNotIn("gh release create", workflow)
 

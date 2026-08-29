@@ -194,10 +194,12 @@ elif [[ "$require_deployment_evidence" != false ]]; then
   exit 64
 fi
 python3 - "$version" "$expected_repository" "$expected_signing_fingerprint" "$public_key_sha256" \
-  "$proof_rows" "$temporary_root" "$deployment_intent" "$deployment_record" "$deployment_status" <<'PY'
+  "$proof_rows" "$temporary_root" "$deployment_intent" "$deployment_record" "$deployment_status" \
+  "$script_directory" <<'PY'
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 import sys
 
 (
@@ -210,6 +212,7 @@ import sys
     deployment_intent,
     deployment_record,
     deployment_status,
+    script_directory,
 ) = sys.argv[1:]
 
 
@@ -222,6 +225,7 @@ def sha256(path: Path) -> str:
 
 
 files = []
+public_manifest = []
 for line in Path(rows_path).read_text(encoding="utf-8").splitlines():
     path, artifact_sha256, size, signature_sha256, gpg_proof_path = line.split("\t")
     name = Path(path).name
@@ -254,6 +258,22 @@ for line in Path(rows_path).read_text(encoding="utf-8").splitlines():
         "checksums": checksums,
         "checksums_byte_identical": bool(expected_repository),
     })
+    public_manifest.append({"path": path, "bytes": int(size), "sha256": artifact_sha256})
+    public_manifest.append({
+        "path": f"{path}.asc",
+        "bytes": signature.stat().st_size,
+        "sha256": signature_sha256,
+    })
+    public_manifest.extend({
+        "path": checksum["path"],
+        "bytes": checksum["bytes"],
+        "sha256": checksum["sha256"],
+    } for checksum in checksums)
+
+public_manifest.sort(key=lambda item: item["path"])
+public_manifest_sha256 = hashlib.sha256(
+    (json.dumps(public_manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")
+).hexdigest()
 
 deployment = None
 if deployment_intent or deployment_record or deployment_status:
@@ -262,37 +282,34 @@ if deployment_intent or deployment_record or deployment_status:
     intent_path = Path(deployment_intent)
     record_path = Path(deployment_record)
     status_path = Path(deployment_status)
-    intent = json.loads(intent_path.read_text(encoding="utf-8"))
     record = json.loads(record_path.read_text(encoding="utf-8"))
     status = json.loads(status_path.read_text(encoding="utf-8"))
-    intent_sha256 = sha256(intent_path)
-    record_sha256 = sha256(record_path)
-    if intent.get("schema") != "latchway.maven-central-upload-intent.v1":
-        raise SystemExit("deployment intent schema is invalid")
-    if intent.get("version") != version or intent.get("namespace") != "dev.latchway":
-        raise SystemExit("deployment intent coordinates are invalid")
-    if record.get("schema") != "latchway.maven-central-deployment.v1":
-        raise SystemExit("deployment record schema is invalid")
-    if record.get("intent_sha256") != intent_sha256:
-        raise SystemExit("deployment record is not bound to the upload intent")
-    if status.get("schema") != "latchway.maven-central-deployment-status.v1":
-        raise SystemExit("deployment status schema is invalid")
-    if status.get("deployment_state") != "PUBLISHED":
-        raise SystemExit("deployment status is not PUBLISHED")
-    if status.get("intent_sha256") != intent_sha256 or status.get("record_sha256") != record_sha256:
-        raise SystemExit("deployment status hash bindings are invalid")
-    if status.get("deployment_id") != record.get("deployment_id"):
-        raise SystemExit("deployment status ID differs from the immutable record")
+    helper = Path(script_directory, "central-deployment-record.py")
+    validation = subprocess.run(
+        [
+            sys.executable, str(helper), "validate-complete",
+            "--intent", str(intent_path), "--record", str(record_path),
+            "--status", str(status_path),
+            "--public-manifest-sha256", public_manifest_sha256,
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if validation.returncode != 0:
+        raise SystemExit(validation.stderr.strip() or "deployment evidence validation failed")
     deployment = {
-        "intent_sha256": intent_sha256,
-        "record_sha256": record_sha256,
+        "intent_sha256": sha256(intent_path),
+        "record_sha256": sha256(record_path),
         "status_sha256": sha256(status_path),
+        "record_kind": record.get("record_kind"),
         "record": record,
         "status": status,
     }
 
 print(json.dumps({
-    "schema_version": 1,
+    "schema_version": 2,
     "registry": "maven_central",
     "namespace": "dev.latchway",
     "version": version,
@@ -304,6 +321,8 @@ print(json.dumps({
     "signing_fingerprint": signing_fingerprint,
     "reviewed_public_key_sha256": public_key_sha256,
     "deployment": deployment,
+    "public_manifest": public_manifest,
+    "public_manifest_sha256": public_manifest_sha256,
     "files": files,
 }, indent=2, sort_keys=True))
 PY

@@ -90,15 +90,21 @@ material is not persisted there.
 ## Stage a release
 
 The protected `repository_dispatch` workflow is the supported final-release
-entry point because it atomically coordinates the draft assets and single-use
-guard. For a controlled local `user_managed` rehearsal, first build the reviewed
-repository, export the reviewed public key, and create the intent:
+entry point because it coordinates a fixed-asset draft with a recoverable,
+deterministically named Portal deployment. For a controlled local rehearsal,
+first build the reviewed repository, export the reviewed public key, build the
+signed Portal ZIP in a signing-only process, and create the intent:
 
 ```shell
 scripts/build-release-artifacts.sh 1.0.0
+LATCHWAY_SIGNING_KEY=... LATCHWAY_SIGNING_PASSWORD=... \
+LATCHWAY_CENTRAL_SIGNING_PUBLIC_KEY=build/release/latchway-maven-signing-public-key.asc \
+scripts/build-central-portal-bundle.sh 1.0.0 \
+  build/release/latchway-android-1.0.0-central-portal.zip
 python3 scripts/central-deployment-record.py create-intent \
   --repository build/release/repository \
   --archive build/release/latchway-android-1.0.0-maven-repository.zip \
+  --portal-bundle build/release/latchway-android-1.0.0-central-portal.zip \
   --public-key build/release/latchway-maven-signing-public-key.asc \
   --source-commit "$(git rev-parse HEAD)" \
   --tag v1.0.0 --version 1.0.0 --namespace dev.latchway \
@@ -106,36 +112,42 @@ python3 scripts/central-deployment-record.py create-intent \
   --output build/release/maven-central-upload-intent.json
 ```
 
-After independently retaining that intent, authorize exactly one upload:
+After independently retaining that intent and exact Portal ZIP, run the
+recoverable upload stage with Portal credentials only:
 
 ```shell
 LATCHWAY_RELEASE_VERSION=1.0.0 \
 LATCHWAY_CENTRAL_UPLOAD_INTENT=build/release/maven-central-upload-intent.json \
 LATCHWAY_CENTRAL_DEPLOYMENT_RECORD=build/release/maven-central-deployment.json \
 LATCHWAY_CENTRAL_DEPLOYMENT_STATUS=build/release/maven-central-deployment-status.json \
-LATCHWAY_CENTRAL_ALLOW_NEW_UPLOAD=true \
+LATCHWAY_CENTRAL_INTENT_FRESH=true \
 LATCHWAY_CENTRAL_SIGNING_PUBLIC_KEY=build/release/latchway-maven-signing-public-key.asc \
+LATCHWAY_CENTRAL_PORTAL_BUNDLE=build/release/latchway-android-1.0.0-central-portal.zip \
 ./scripts/publish-central.sh
 ```
 
-Set `LATCHWAY_CENTRAL_ALLOW_NEW_UPLOAD=false` on every continuation. Copy the
-deployment record to durable storage immediately after the upload returns.
+Set `LATCHWAY_CENTRAL_INTENT_FRESH=false` on every continuation. Copy the
+deployment record to durable storage immediately after the upload returns. Do
+not pass signing variables to `publish-central.sh`; it rejects them.
 
-The script performs the local publication/consumer gate and the full Gradle
-`test assemble lint` gate before any new upload. It copies the twice-reproduced
-repository, adds detached signatures with the pinned OpenPGP primary key (a
-signing subkey is supported), verifies every GnuPG machine-status record, and
-uploads that bundle through Sonatype's documented
+The signing-only bundle builder adds detached signatures using an explicitly
+pinned SHA-512 digest and an approved RSA, ECDSA, or EdDSA signing algorithm.
+It verifies every GnuPG machine-status record, including the selected-key flag,
+before the network publisher can receive Portal credentials. The intent
+validator proves a closed 120-file repository allowlist, every checksum's
+contents, exact unsigned-ZIP equivalence, and an exact 144-file signed Portal
+ZIP with no duplicates, links, unsafe entries, or extras. The publisher uploads
+that pre-reviewed bundle through Sonatype's documented
 [Portal Publisher API](https://central.sonatype.org/publish/publish-portal-api/).
 The API returns an exact deployment UUID. That UUID is bound to the source
-commit, reviewed repository archive, public key, expected PURLs, and a
-single-use upload intent before the workflow waits on the deployment.
+commit, both reviewed ZIPs, public key, expected PURLs, and immutable intent
+before the workflow waits on the deployment.
 
-The script defaults to `user_managed`, so an operator can inspect the deployment
-in the Publisher Portal and explicitly publish or drop it. The protected tag
-workflow sets `LATCHWAY_CENTRAL_PUBLISHING_TYPE=automatic`; Sonatype then
-publishes only after validation succeeds. The workflow queries only the
-recorded UUID, waits for Maven Central,
+All releases use `USER_MANAGED`. The first workflow phase stages or adopts the
+deterministically named deployment and attaches its UUID to the GitHub draft.
+Only a later phase, after that durable attachment, sets
+`LATCHWAY_CENTRAL_PUBLISH_AFTER_VALIDATION=true` and invokes the exact recorded
+UUID's publish endpoint. It then waits for Maven Central,
 downloads every POM, Gradle module, AAR, sources JAR, and Javadoc JAR, compares
 every primary artifact and MD5/SHA-1/SHA-256/SHA-512 sidecar byte for byte with
 the reproducible repository assembled earlier in the run, and cryptographically
@@ -144,12 +156,14 @@ pinned primary fingerprint. GnuPG output is parsed fail-closed: revoked,
 expired, bad, unknown, ambiguous, or wrong-primary status is rejected.
 
 Before the first Portal request, the workflow requires GitHub immutable
-releases to be enabled, creates or resumes a draft, predeclares the complete
-fixed asset set, and attaches the single-use intent. It then durably attaches
+releases to be enabled, validates the exact remote annotated tag object,
+target commit, and promotion-derived message, creates or resumes a draft,
+predeclares the complete fixed asset set, and attaches the intent, signed
+Portal ZIP, and tag-binding proof. It then durably attaches
 the deployment record before waiting. Post-registry evidence retains hashes of
 every artifact and checksum sidecar, every exact armored signature, normalized
 GnuPG status, the reviewed public-key hash, and the deployment record/status.
-Only after those files exist does the workflow seal `SHA256SUMS` over all six
+Only after those files exist does the workflow seal `SHA256SUMS` over all eight
 other fixed assets, attest that manifest, and attach it to the draft.
 Only after every asset is attached does it publish the GitHub release, and it
 requires the release API to report `immutable: true`. It then runs
@@ -157,6 +171,14 @@ requires the release API to report `immutable: true`. It then runs
 --format json` for every exact local asset, with bounded retries for GitHub's
 automatic attestation propagation. A rerun downloads and byte-compares the
 immutable assets without mutation.
+
+Immediately before the irreversible publish transition, the reconciler fetches
+the remote annotated tag and revalidates its exact object, commit target, and
+message again. After GitHub reports the release immutable, a strict verifier
+decodes the verified release DSSE statement and requires its release predicate
+and subject digest to name that exact annotated tag object. The raw release and
+per-asset verification JSON plus normalized commit-binding proof are retained
+as a 90-day workflow artifact.
 
 The `maven-central` GitHub environment must protect all five release secrets and
 require an authorized reviewer. `LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN` is a
@@ -180,15 +202,17 @@ apply. Do not use that override for the final release.
 
 ## Failure recovery
 
-Rerunning an exact promotion is safe once the deployment record exists: the
-script validates its hash binding, queries that UUID, and never invokes the
-upload endpoint again. If a run stops after the single-use intent is attached
-but before the UUID is durably attached, the next run fails closed. Recover the
-original UUID in the Central Portal, review it against the deterministic
-deployment name and exact five PURLs, create the matching record, and resume.
-Never delete the intent or authorize a second upload to work around an uncertain
-outcome. Once any coordinate is public, the script also refuses another upload
-and verifies all five immutable coordinates byte for byte.
+Rerunning an exact promotion is safe across pre-POST, in-POST, response-loss,
+and post-POST crashes. Before any upload the script queries Sonatype's deployment
+list using the full deterministic name (which includes the exact Portal ZIP
+SHA-256). A rerun waits for and adopts the matching UUID; an ambiguous POST also
+reconciles that list and never blindly retries during the same invocation. If a
+crash occurred before the POST and no deployment appears during the bounded
+recovery window, the unchanged immutable intent authorizes the exact upload.
+Multiple matching UUIDs fail closed. Once any coordinate is public, the script
+verifies all five coordinates and records a complete public-registry adoption
+record/status bound to the recomputed public manifest instead of exiting without
+durable state.
 
 Current official references:
 

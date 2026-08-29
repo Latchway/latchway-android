@@ -32,7 +32,10 @@ fingerprint=${LATCHWAY_CENTRAL_SIGNING_FINGERPRINT:-}
   echo "In-memory OpenPGP signing material is required for a new Portal bundle" >&2
   exit 64
 }
-[[ "$LATCHWAY_SIGNING_PASSWORD" != *$'\n'* && "$LATCHWAY_SIGNING_PASSWORD" != *$'\r'* ]] || {
+signing_key=$LATCHWAY_SIGNING_KEY
+signing_password=$LATCHWAY_SIGNING_PASSWORD
+unset LATCHWAY_SIGNING_KEY LATCHWAY_SIGNING_PASSWORD
+[[ "$signing_password" != *$'\n'* && "$signing_password" != *$'\r'* ]] || {
   echo "OpenPGP signing password must be a single line" >&2
   exit 64
 }
@@ -51,12 +54,12 @@ if find "$temporary_root/repository" -type l -print -quit | grep -q .; then
   exit 1
 fi
 
-printf '%s' "$LATCHWAY_SIGNING_KEY" |
+printf '%s' "$signing_key" |
   gpg --batch --homedir "$temporary_root/gnupg" --import >/dev/null 2>&1 || {
     echo "Could not import the in-memory Maven signing key" >&2
     exit 1
   }
-unset LATCHWAY_SIGNING_KEY
+unset signing_key
 
 gpg --batch --homedir "$temporary_root/gnupg" --import "$public_key" >/dev/null 2>&1 || {
   echo "Could not import the reviewed Maven signing public key" >&2
@@ -85,10 +88,10 @@ for module in "${modules[@]}"; do
       echo "Reviewed Maven repository is missing $name" >&2
       exit 1
     }
-    printf '%s\n' "$LATCHWAY_SIGNING_PASSWORD" |
+    printf '%s\n' "$signing_password" |
       gpg --batch --yes --homedir "$temporary_root/gnupg" \
         --pinentry-mode loopback --passphrase-fd 0 \
-        --local-user "$fingerprint" --armor --detach-sign \
+        --local-user "$fingerprint" --digest-algo SHA512 --armor --detach-sign \
         --output "$artifact.asc" "$artifact" >/dev/null 2>&1 || {
       echo "Could not sign $name with the pinned Maven key" >&2
       exit 1
@@ -110,7 +113,7 @@ for module in "${modules[@]}"; do
     }
   done
 done
-unset LATCHWAY_SIGNING_PASSWORD
+unset signing_password
 
 find "$temporary_root/repository" -exec touch -t 198001010000 {} +
 archive="$temporary_root/central-portal-bundle.zip"

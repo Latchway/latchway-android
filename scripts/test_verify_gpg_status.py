@@ -107,6 +107,24 @@ class GnuPGStatusTests(unittest.TestCase):
         self.assertNotEqual(mismatch.returncode, 0)
         self.assertIn("other than the pinned", mismatch.stderr)
 
+    def test_rejects_weak_or_unapproved_signature_algorithms(self) -> None:
+        for replacement, reason in (
+            (" 1 2 00", "pinned SHA-512"),
+            (" 17 10 00", "public-key algorithm"),
+            (" 1 10 01", "detached binary"),
+        ):
+            with self.subTest(replacement=replacement):
+                result = self.invoke(valid_status().replace(" 1 10 00", replacement))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(reason, result.stderr)
+
+    def test_rejects_key_considered_not_selected_flag(self) -> None:
+        result = self.invoke(valid_status().replace(
+            f"KEY_CONSIDERED {PRIMARY} 0", f"KEY_CONSIDERED {PRIMARY} 1",
+        ))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("usable pinned key", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
