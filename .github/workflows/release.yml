@@ -1,19 +1,145 @@
 name: Android SDK release
 
 on:
-  push:
-    tags:
-      - "v*"
+  repository_dispatch:
+    types: [latchway_release_promoted]
 
 permissions:
   contents: read
 
 concurrency:
-  group: android-release-${{ github.ref }}
+  group: android-release-${{ github.event.client_payload.repository.commit }}
   cancel-in-progress: false
 
 jobs:
+  promote:
+    name: Verify core promotion and create SDK tag
+    if: github.repository == 'Latchway/latchway-android'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      attestations: read
+      contents: write
+    outputs:
+      commit: ${{ steps.promotion.outputs.release_commit }}
+      tag: ${{ steps.promotion.outputs.release_tag }}
+      version: ${{ steps.promotion.outputs.release_version }}
+    steps:
+      - name: Check out exact promoted Android source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.client_payload.repository.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate dispatch envelope before network access
+        shell: bash
+        env:
+          SDK_ID: ${{ github.event.client_payload.repository.id }}
+          SDK_COMMIT: ${{ github.event.client_payload.repository.commit }}
+          SDK_VERSION: ${{ github.event.client_payload.repository.version }}
+          SDK_TAG: ${{ github.event.client_payload.repository.intended_tag }}
+          CORE_TAG: ${{ github.event.client_payload.core_tag }}
+          REPORT_URL: ${{ github.event.client_payload.promotion_evidence_url }}
+          REPORT_SHA256: ${{ github.event.client_payload.promotion_evidence_sha256 }}
+          OCI_IMAGE_DIGEST: ${{ github.event.client_payload.oci_image_digest }}
+        run: |
+          set -euo pipefail
+          test "$SDK_ID" = android
+          [[ "$SDK_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$SDK_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          test "$SDK_TAG" = "v$SDK_VERSION"
+          [[ "$CORE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]
+          [[ "$REPORT_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$OCI_IMAGE_DIGEST" =~ ^ghcr\.io/latchway/latchway@sha256:[0-9a-f]{64}$ ]]
+          test "$REPORT_URL" = "https://github.com/Latchway/latchway/releases/download/$CORE_TAG/latchway-cross-repository-promotion.json"
+          test "$GITHUB_SHA" = "$SDK_COMMIT"
+          test "$(git rev-parse --verify HEAD)" = "$SDK_COMMIT"
+      - name: Download and hash the exact core promotion report
+        shell: bash
+        env:
+          CORE_TAG: ${{ github.event.client_payload.core_tag }}
+          REPORT_URL: ${{ github.event.client_payload.promotion_evidence_url }}
+          REPORT_SHA256: ${{ github.event.client_payload.promotion_evidence_sha256 }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/latchway-cross-repository-promotion.json"
+          test "$REPORT_URL" = "https://github.com/Latchway/latchway/releases/download/$CORE_TAG/latchway-cross-repository-promotion.json"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --connect-timeout 15 --max-time 120 --max-filesize 2097152 \
+            --fail --location --silent --show-error --output "$report" "$REPORT_URL"
+          printf '%s  %s\n' "$REPORT_SHA256" "$report" | sha256sum --check --strict
+      - name: Verify the core workflow artifact attestation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh attestation verify "$RUNNER_TEMP/latchway-cross-repository-promotion.json" \
+            --repo Latchway/latchway \
+            --signer-workflow Latchway/latchway/.github/workflows/cross-repository-conformance.yml \
+            --source-ref refs/heads/main \
+            --deny-self-hosted-runners
+      - name: Validate exact report, dispatch, and local source bindings
+        id: promotion
+        shell: bash
+        env:
+          SDK_COMMIT: ${{ github.event.client_payload.repository.commit }}
+          SDK_VERSION: ${{ github.event.client_payload.repository.version }}
+          SDK_TAG: ${{ github.event.client_payload.repository.intended_tag }}
+          CORE_TAG: ${{ github.event.client_payload.core_tag }}
+          REPORT_URL: ${{ github.event.client_payload.promotion_evidence_url }}
+          REPORT_SHA256: ${{ github.event.client_payload.promotion_evidence_sha256 }}
+          OCI_IMAGE_DIGEST: ${{ github.event.client_payload.oci_image_digest }}
+        run: |
+          python3 scripts/verify-release-promotion.py \
+            --report "$RUNNER_TEMP/latchway-cross-repository-promotion.json" \
+            --report-url "$REPORT_URL" \
+            --report-sha256 "$REPORT_SHA256" \
+            --repository-id android \
+            --repository-commit "$SDK_COMMIT" \
+            --repository-version "$SDK_VERSION" \
+            --repository-tag "$SDK_TAG" \
+            --workflow-commit "$GITHUB_SHA" \
+            --core-tag "$CORE_TAG" \
+            --oci-image-digest "$OCI_IMAGE_DIGEST" \
+            --github-output "$GITHUB_OUTPUT"
+      - name: Create or verify evidence-gated annotated SDK tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ steps.promotion.outputs.release_commit }}
+          RELEASE_TAG: ${{ steps.promotion.outputs.release_tag }}
+          CORE_TAG: ${{ steps.promotion.outputs.core_tag }}
+          REPORT_SHA256: ${{ steps.promotion.outputs.report_sha256 }}
+        run: |
+          set -euo pipefail
+          message="Android SDK $RELEASE_TAG
+
+          Core promotion: $CORE_TAG
+          Promotion evidence SHA-256: $REPORT_SHA256"
+          remote=$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG")
+          if [[ -n "$remote" ]]; then
+            tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha)
+            test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object" --jq .object.type)" = commit
+            test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object" --jq .object.sha)" = "$RELEASE_COMMIT"
+            test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object" --jq .message)" = "$message"
+          else
+            jq --null-input --arg tag "$RELEASE_TAG" --arg message "$message" \
+              --arg object "$RELEASE_COMMIT" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              '{tag: $tag, message: $message, object: $object, type: "commit", tagger: {name: "github-actions[bot]", email: "41898282+github-actions[bot]@users.noreply.github.com", date: $date}}' \
+              > "$RUNNER_TEMP/sdk-tag-object.json"
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/tags" --input "$RUNNER_TEMP/sdk-tag-object.json" > "$RUNNER_TEMP/sdk-tag-result.json"
+            tag_object=$(jq --raw-output .sha "$RUNNER_TEMP/sdk-tag-result.json")
+            jq --null-input --arg ref "refs/tags/$RELEASE_TAG" --arg sha "$tag_object" \
+              '{ref: $ref, sha: $sha}' > "$RUNNER_TEMP/sdk-tag-ref.json"
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" --input "$RUNNER_TEMP/sdk-tag-ref.json" >/dev/null
+          fi
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$RELEASE_COMMIT"
+
   publish:
+    if: github.repository == 'Latchway/latchway-android'
+    needs: promote
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     environment: maven-central
@@ -22,12 +148,22 @@ jobs:
       id-token: write
       attestations: write
       artifact-metadata: write
+    env:
+      RELEASE_COMMIT: ${{ needs.promote.outputs.commit }}
+      RELEASE_TAG: ${{ needs.promote.outputs.tag }}
     steps:
-      - name: Check out the exact release tag
+      - name: Check out exact promoted Android source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ needs.promote.outputs.commit }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Fetch and validate the promoted annotated tag
+        run: |
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$RELEASE_COMMIT"
+          scripts/release-preflight.sh "$RELEASE_TAG"
       - name: Configure Java 17
         uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
         with:
@@ -37,19 +173,13 @@ jobs:
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
       - name: Install the pinned Android platform and build tools
         run: sdkmanager "platforms;android-37" "build-tools;36.0.0"
-      - name: Validate source, tag, and contract metadata
-        run: scripts/release-preflight.sh "$GITHUB_REF_NAME"
       - name: Run the complete Android SDK gate
-        env:
-          LATCHWAY_VERSION: ${{ github.ref_name }}
         run: |
-          export LATCHWAY_VERSION="${LATCHWAY_VERSION#v}"
+          export LATCHWAY_VERSION="${RELEASE_TAG#v}"
           ./gradlew test assemble lint --no-daemon
       - name: Build and verify the reproducible Maven bundle
-        env:
-          LATCHWAY_VERSION: ${{ github.ref_name }}
         run: |
-          export LATCHWAY_VERSION="${LATCHWAY_VERSION#v}"
+          export LATCHWAY_VERSION="${RELEASE_TAG#v}"
           scripts/build-release-artifacts.sh "$LATCHWAY_VERSION"
       - name: Attest the exact release bundle
         uses: actions/attest-build-provenance@e4d4f7c39adfa4c260fb5c147f0622000aa14b99 # v4.0.0
@@ -57,28 +187,24 @@ jobs:
           subject-path: build/release/latchway-android-*-maven-repository.zip
       - name: Publish signed artifacts to Maven Central
         env:
-          LATCHWAY_RELEASE_VERSION: ${{ github.ref_name }}
+          LATCHWAY_RELEASE_VERSION: ${{ needs.promote.outputs.version }}
           LATCHWAY_CENTRAL_PUBLISHING_TYPE: automatic
           LATCHWAY_MAVEN_CENTRAL_USERNAME: ${{ secrets.LATCHWAY_MAVEN_CENTRAL_USERNAME }}
           LATCHWAY_MAVEN_CENTRAL_PASSWORD: ${{ secrets.LATCHWAY_MAVEN_CENTRAL_PASSWORD }}
           LATCHWAY_SIGNING_KEY: ${{ secrets.LATCHWAY_SIGNING_KEY }}
           LATCHWAY_SIGNING_PASSWORD: ${{ secrets.LATCHWAY_SIGNING_PASSWORD }}
-        run: |
-          export LATCHWAY_RELEASE_VERSION="${LATCHWAY_RELEASE_VERSION#v}"
-          scripts/publish-central.sh
+        run: scripts/publish-central.sh
       - name: Verify the immutable public artifacts
         env:
-          LATCHWAY_RELEASE_VERSION: ${{ github.ref_name }}
-        run: |
-          export LATCHWAY_RELEASE_VERSION="${LATCHWAY_RELEASE_VERSION#v}"
-          scripts/verify-central-release.sh "$LATCHWAY_RELEASE_VERSION"
+          LATCHWAY_RELEASE_VERSION: ${{ needs.promote.outputs.version }}
+        run: scripts/verify-central-release.sh "$LATCHWAY_RELEASE_VERSION"
       - name: Create the GitHub release after registry verification
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "$RELEASE_TAG" \
             --verify-tag \
-            --title "$GITHUB_REF_NAME" \
+            --title "$RELEASE_TAG" \
             --generate-notes \
             build/release/latchway-android-*-maven-repository.zip \
             build/release/SHA256SUMS
