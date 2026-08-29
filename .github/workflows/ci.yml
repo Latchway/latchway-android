@@ -32,6 +32,11 @@ jobs:
         run: sdkmanager "platforms;android-37" "build-tools;36.0.0"
       - name: Run unit, assembly, and lint gates
         run: ./gradlew test assemble lint --no-daemon
+      - name: Test fail-closed physical-evidence validation
+        run: |
+          python3 scripts/test-device-evidence.py
+          python3 scripts/test-verify-gateway-deployment.py
+          bash -n scripts/gateway-deployment-evidence.sh scripts/run-physical-play-integrity.sh
       - name: Publish and compile an independent offline consumer
         run: ./scripts/verify-local-publication.sh
       - name: Retain the verified test Maven repository

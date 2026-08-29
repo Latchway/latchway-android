@@ -42,8 +42,8 @@ public data class CoreConfiguration(
 ) {
     init {
         requireBaseUrl(baseUrl, allowInsecureLoopback)
-        require(applicationId.isNotBlank() && applicationId.length <= 128) {
-            "applicationId must contain 1 to 128 characters"
+        require(APPLICATION_ID.matches(applicationId)) {
+            "applicationId must be the canonical app_ resource ID returned by the Admin API"
         }
         requireIdentifier(environment, "environment")
         requireIdentifier(identityProvider, "identityProvider")
@@ -55,6 +55,7 @@ public data class CoreConfiguration(
     internal fun endpoint(path: String): URI = baseUrl.resolve(path.removePrefix("/"))
 
     private companion object {
+        val APPLICATION_ID = Regex("^app_[0-7][0-9A-HJKMNP-TV-Z]{25}$")
         val SEMVER = Regex("^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")
     }
 }

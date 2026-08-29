@@ -1,0 +1,438 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://latchway.dev/schemas/physical-device-evidence-v1.json",
+  "title": "Latchway physical-device evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "generated_at",
+    "release_eligible",
+    "platform",
+    "run",
+    "source",
+    "toolchain",
+    "application",
+    "device",
+    "provider",
+    "pins",
+    "tests",
+    "redaction",
+    "artifacts"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "latchway.physical-device-evidence.v1"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "release_eligible": {
+      "type": "boolean"
+    },
+    "platform": {
+      "enum": [
+        "ios_app_attest",
+        "android_play_integrity",
+        "react_native_ios_app_attest",
+        "react_native_android_play_integrity"
+      ]
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "mode", "started_at", "completed_at"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$"
+        },
+        "mode": {
+          "const": "release"
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "completed_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "commit",
+        "core_commit",
+        "worktree_clean",
+        "sdk_version",
+        "contract_version",
+        "contract_bundle_sha256",
+        "gateway_image_digest",
+        "gateway_configuration_sha256",
+        "gateway_origin",
+        "gateway_deployment_key_id",
+        "gateway_deployment_statement_sha256",
+        "gateway_deployment_public_key_sha256",
+        "gateway_version"
+      ],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "pattern": "^Latchway/[A-Za-z0-9._-]{1,100}$"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "core_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "worktree_clean": {
+          "type": "boolean"
+        },
+        "sdk_version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"
+        },
+        "contract_version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "contract_bundle_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "gateway_image_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "gateway_configuration_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "gateway_origin": {
+          "type": "string",
+          "pattern": "^https://[a-z0-9][A-Za-z0-9.-]*(?::[1-9][0-9]{0,4})?(?:/[A-Za-z0-9_~.-]+)*$"
+        },
+        "gateway_deployment_key_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "gateway_deployment_statement_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "gateway_deployment_public_key_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "gateway_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      }
+    },
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runner_os", "runner_arch", "compiler", "build_tool", "collector_version"],
+      "properties": {
+        "runner_os": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "runner_arch": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]{1,32}$"
+        },
+        "compiler": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "build_tool": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "collector_version": {
+          "const": "1"
+        }
+      }
+    },
+    "application": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identifier",
+        "version",
+        "build",
+        "build_mode",
+        "distribution",
+        "debuggable",
+        "signing_certificate_sha256"
+      ],
+      "properties": {
+        "identifier": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,254}$"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "build": {
+          "type": "string",
+          "pattern": "^[0-9]{1,18}$"
+        },
+        "build_mode": {
+          "const": "release"
+        },
+        "distribution": {
+          "enum": ["ad_hoc", "testflight", "app_store", "play_internal", "play_closed", "play_open", "play_production"]
+        },
+        "debuggable": {
+          "type": "boolean"
+        },
+        "signing_certificate_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "team_id": {
+          "type": "string",
+          "pattern": "^[A-Z0-9]{10}$"
+        },
+        "cloud_project_number": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "installer_package": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,254}$"
+        },
+        "play_track": {
+          "enum": ["internal", "closed", "open", "production"]
+        },
+        "app_attest_environment": {
+          "enum": ["development", "production"]
+        },
+        "new_architecture": {
+          "type": "boolean"
+        },
+        "native_sdk_version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"
+        },
+        "native_evidence_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "physical",
+        "simulator",
+        "emulator",
+        "testing",
+        "debugger_attached",
+        "model",
+        "os_name",
+        "os_version",
+        "os_build",
+        "security_level"
+      ],
+      "properties": {
+        "physical": {
+          "type": "boolean"
+        },
+        "simulator": {
+          "type": "boolean"
+        },
+        "emulator": {
+          "type": "boolean"
+        },
+        "testing": {
+          "type": "boolean"
+        },
+        "debugger_attached": {
+          "type": "boolean"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "os_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "os_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "os_build": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "security_level": {
+          "enum": ["secure_enclave", "strongbox", "tee", "unknown_secure_hardware", "software", "unknown"]
+        }
+      }
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "environment", "trust_level", "request_hash_bound", "app_recognition", "account_licensing"],
+      "properties": {
+        "name": {
+          "enum": ["app_attest", "play_integrity"]
+        },
+        "environment": {
+          "const": "production"
+        },
+        "trust_level": {
+          "enum": ["device_verified", "strong_device_verified"]
+        },
+        "request_hash_bound": {
+          "type": "boolean"
+        },
+        "app_recognition": {
+          "enum": ["not_applicable", "PLAY_RECOGNIZED"]
+        },
+        "account_licensing": {
+          "enum": ["not_applicable", "LICENSED"]
+        }
+      }
+    },
+    "pins": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "expected", "observed", "matched"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{1,63}$"
+          },
+          "expected": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "observed": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "matched": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "tests": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "status", "duration_ms"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{2,63}$"
+          },
+          "status": {
+            "enum": ["passed", "failed", "skipped"]
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3600000
+          },
+          "http_status": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 599
+          },
+          "error_code": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{2,63}$"
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$"
+          }
+        }
+      }
+    },
+    "redaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity_token_recorded",
+        "session_token_recorded",
+        "refresh_token_recorded",
+        "dpop_proof_recorded",
+        "attestation_evidence_recorded",
+        "private_key_recorded",
+        "provider_credential_recorded"
+      ],
+      "properties": {
+        "identity_token_recorded": {"const": false},
+        "session_token_recorded": {"const": false},
+        "refresh_token_recorded": {"const": false},
+        "dpop_proof_recorded": {"const": false},
+        "attestation_evidence_recorded": {"const": false},
+        "private_key_recorded": {"const": false},
+        "provider_credential_recorded": {"const": false}
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observation_sha256", "application_binary_sha256", "device_inventory_sha256", "profile_sha256", "schema_sha256"],
+      "properties": {
+        "observation_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "application_binary_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "device_inventory_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "profile_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "schema_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    }
+  }
+}

@@ -31,6 +31,32 @@ class SessionCoordinatorTest {
     private val signer = FakeSigner()
 
     @Test
+    fun configurationRejectsNoncanonicalApplicationIdsLocally() {
+        listOf(
+            "habitify",
+            "app_habitify",
+            "app_81J00000000000000000000000",
+            "app_01j00000000000000000000000",
+            "app_01J0000000000000000000000",
+        ).forEach { applicationId ->
+            assertThrows(IllegalArgumentException::class.java) {
+                CoreConfiguration(
+                    baseUrl = URI("https://gateway.example.test/"),
+                    applicationId = applicationId,
+                    environment = "production",
+                    identityProvider = "firebase",
+                )
+            }
+        }
+        CoreConfiguration(
+            baseUrl = URI("https://gateway.example.test/"),
+            applicationId = "app_01J00000000000000000000000",
+            environment = "production",
+            identityProvider = "firebase",
+        )
+    }
+
+    @Test
     fun initialSessionExchangeIsSingleFlightAcrossConcurrentCallers() = runBlocking {
         val responses = ConcurrentLinkedQueue(
             listOf(
@@ -1100,7 +1126,7 @@ class SessionCoordinatorTest {
     ): LatchwayCoreClient = LatchwayCoreClient.create(
         configuration = CoreConfiguration(
             baseUrl = URI("https://gateway.example.test/"),
-            applicationId = "app_habitify",
+            applicationId = "app_01J00000000000000000000000",
             environment = "production",
             identityProvider = "firebase",
             clientPlatform = clientPlatform,

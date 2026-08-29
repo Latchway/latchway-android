@@ -11,6 +11,10 @@ local.properties
 .cxx/
 captures/
 
+# Python conformance test cache
+__pycache__/
+*.py[cod]
+
 # Local credentials and signing material
 .env
 .env.*

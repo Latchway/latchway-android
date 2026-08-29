@@ -7,6 +7,26 @@
         <meta-data android:name="dev.latchway.FEATURE" android:value="${latchwayFeature}" />
         <meta-data android:name="dev.latchway.MODEL" android:value="${latchwayModel}" />
         <meta-data android:name="dev.latchway.CLOUD_PROJECT_NUMBER" android:value="${latchwayCloudProjectNumber}" />
+        <meta-data android:name="dev.latchway.PLAY_TRACK" android:value="${latchwayPlayTrack}" />
+        <meta-data android:name="dev.latchway.SOURCE_COMMIT" android:value="${latchwaySourceCommit}" />
+        <meta-data android:name="dev.latchway.CORE_COMMIT" android:value="${latchwayCoreCommit}" />
+        <meta-data android:name="dev.latchway.CONTRACT_BUNDLE_SHA256" android:value="${latchwayContractBundleSha256}" />
+        <meta-data android:name="dev.latchway.GATEWAY_IMAGE_DIGEST" android:value="${latchwayGatewayImageDigest}" />
+        <meta-data android:name="dev.latchway.GATEWAY_CONFIGURATION_SHA256" android:value="${latchwayGatewayConfigurationSha256}" />
+        <meta-data android:name="dev.latchway.GATEWAY_ORIGIN" android:value="${latchwayGatewayOrigin}" />
+        <meta-data android:name="dev.latchway.GATEWAY_DEPLOYMENT_KEY_ID" android:value="${latchwayGatewayDeploymentKeyId}" />
+        <meta-data android:name="dev.latchway.GATEWAY_DEPLOYMENT_STATEMENT_SHA256" android:value="${latchwayGatewayDeploymentStatementSha256}" />
+        <meta-data android:name="dev.latchway.GATEWAY_DEPLOYMENT_PUBLIC_KEY_SHA256" android:value="${latchwayGatewayDeploymentPublicKeySha256}" />
+        <meta-data android:name="dev.latchway.EXPECTED_PACKAGE" android:value="${latchwayExpectedPackage}" />
+        <meta-data android:name="dev.latchway.EXPECTED_VERSION" android:value="${latchwayExpectedVersion}" />
+        <meta-data android:name="dev.latchway.EXPECTED_BUILD" android:value="${latchwayExpectedBuild}" />
+        <meta-data android:name="dev.latchway.EXPECTED_CERTIFICATE_SHA256" android:value="${latchwayExpectedCertificateSha256}" />
+        <meta-data android:name="dev.latchway.REQUIRE_LICENSED" android:value="${latchwayRequireLicensed}" />
+        <provider
+            android:name=".DeviceEvidenceProvider"
+            android:authorities="${applicationId}.device-evidence"
+            android:exported="true"
+            android:readPermission="android.permission.DUMP" />
         <activity android:name=".ConformanceActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
