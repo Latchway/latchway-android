@@ -530,6 +530,13 @@ def parse_arguments() -> argparse.Namespace:
 def main() -> int:
     arguments = parse_arguments()
     try:
+        version_check = subprocess.run(
+            [sys.executable, str(Path(__file__).with_name("require-gh-version.py"))],
+            check=False,
+            stdout=subprocess.DEVNULL,
+        )
+        if version_check.returncode != 0:
+            raise RuntimeError("GitHub CLI does not satisfy the release security baseline.")
         expected_tag_message = load_tag_message(arguments.expected_tag_message_file)
         expected_tag_object_sha = None
         if arguments.tag_binding_output is not None and arguments.tag_binding_output.exists():
