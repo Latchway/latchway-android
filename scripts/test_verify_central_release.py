@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
 import tempfile
@@ -56,7 +57,17 @@ set -euo pipefail
 if [[ " $* " == *" --with-colons "* ]]; then
   printf 'fpr:::::::::AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:\n'
 elif [[ " $* " == *" --status-fd "* ]]; then
-  printf '[GNUPG:] VALIDSIG AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA 2026-01-01 0 4 0 1 10 00 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n'
+  if [[ -n "${FAKE_GPG_STATUS_FILE:-}" ]]; then
+    /bin/cat "$FAKE_GPG_STATUS_FILE"
+  else
+    printf '%s\n' \
+      '[GNUPG:] NEWSIG' \
+      '[GNUPG:] KEY_CONSIDERED AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA 0' \
+      '[GNUPG:] SIG_ID abcdefghijklmnopqrstuvwx 1787961600 2026-08-29' \
+      '[GNUPG:] GOODSIG AAAAAAAAAAAAAAAA Latchway Release' \
+      '[GNUPG:] VALIDSIG AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA 2026-08-29 1787961600 0 4 0 1 10 00' \
+      '[GNUPG:] TRUST_UNDEFINED 0 pgp'
+  fi
 fi
 """)
         self.public_key = self.root / "public-key.asc"
@@ -102,7 +113,13 @@ fi
             )
         path.with_name(f"{path.name}.asc").write_text("-----BEGIN PGP SIGNATURE-----\ntest\n", encoding="utf-8")
 
-    def invoke(self, *, expected: bool = True) -> subprocess.CompletedProcess[str]:
+    def invoke(
+        self,
+        *,
+        expected: bool = True,
+        gpg_status: str | None = None,
+        extra_environment: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         environment = {
             **os.environ,
             "PATH": f"{self.bin}:/usr/bin:/bin",
@@ -116,6 +133,11 @@ fi
             environment["LATCHWAY_CENTRAL_EXPECTED_REPOSITORY"] = str(self.expected)
             environment["LATCHWAY_CENTRAL_SIGNING_FINGERPRINT"] = self.fingerprint
             environment["LATCHWAY_CENTRAL_SIGNING_PUBLIC_KEY"] = str(self.public_key)
+        if gpg_status is not None:
+            status_file = self.root / "gpg-status"
+            status_file.write_text(gpg_status, encoding="utf-8")
+            environment["FAKE_GPG_STATUS_FILE"] = str(status_file)
+        environment.update(extra_environment or {})
         return subprocess.run(
             ["/bin/bash", str(SCRIPT), "1.0.0"],
             cwd=ROOT,
@@ -130,6 +152,47 @@ fi
         result = self.invoke()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('"primary_artifacts_byte_identical": true', result.stdout)
+        evidence = json.loads(result.stdout)
+        self.assertEqual(evidence["files"][0]["gpg_status"]["primary_fingerprint"], self.fingerprint)
+        self.assertEqual(len(evidence["files"][0]["checksums"]), 4)
+        self.assertIn("signature_armored", evidence["files"][0])
+
+    def test_signing_subkey_is_accepted_only_through_validsig_primary_field(self) -> None:
+        subkey = "B" * 40
+        status = "\n".join((
+            "[GNUPG:] NEWSIG",
+            f"[GNUPG:] KEY_CONSIDERED {self.fingerprint} 0",
+            "[GNUPG:] SIG_ID abcdefghijklmnopqrstuvwx 1787961600 2026-08-29",
+            f"[GNUPG:] GOODSIG {subkey[-16:]} Latchway Signing Subkey",
+            (
+                f"[GNUPG:] VALIDSIG {subkey} 2026-08-29 1787961600 0 4 0 1 10 00 "
+                f"{self.fingerprint}"
+            ),
+            "[GNUPG:] TRUST_UNDEFINED 0 pgp",
+            "",
+        ))
+        result = self.invoke(gpg_status=status)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        evidence = json.loads(result.stdout)
+        self.assertEqual(evidence["files"][0]["gpg_status"]["signing_fingerprint"], subkey)
+
+    def test_revoked_expired_and_unknown_gpg_statuses_are_rejected(self) -> None:
+        baseline = "\n".join((
+            "[GNUPG:] NEWSIG",
+            f"[GNUPG:] KEY_CONSIDERED {self.fingerprint} 0",
+            "[GNUPG:] SIG_ID abcdefghijklmnopqrstuvwx 1787961600 2026-08-29",
+            f"[GNUPG:] GOODSIG {self.fingerprint[-16:]} Latchway Release",
+            (
+                f"[GNUPG:] VALIDSIG {self.fingerprint} "
+                "2026-08-29 1787961600 0 4 0 1 10 00"
+            ),
+            "[GNUPG:] TRUST_UNDEFINED 0 pgp",
+        ))
+        for invalid in ("REVKEYSIG rejected", "EXPKEYSIG expired", "EXPSIG expired", "FUTURE_OK nope"):
+            with self.subTest(invalid=invalid):
+                result = self.invoke(gpg_status=f"{baseline}\n[GNUPG:] {invalid}\n")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("signature status is invalid", result.stderr)
 
     def test_self_consistent_but_different_public_artifact_is_rejected(self) -> None:
         path = self.remote / "dev/latchway/latchway-core/1.0.0/latchway-core-1.0.0.aar"
@@ -151,6 +214,58 @@ fi
         result = self.invoke()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("checksum mismatch", result.stderr)
+
+    def test_release_proof_hash_binds_exact_intent_record_and_published_status(self) -> None:
+        helper = ROOT / "scripts/central-deployment-record.py"
+        archive = self.root / "release.zip"
+        archive.write_bytes(b"reviewed archive")
+        intent = self.root / "maven-central-upload-intent.json"
+        record = self.root / "maven-central-deployment.json"
+        raw_status = self.root / "raw-status.json"
+        status = self.root / "maven-central-deployment-status.json"
+        subprocess.run([
+            "python3", str(helper), "create-intent",
+            "--repository", str(self.expected), "--archive", str(archive),
+            "--public-key", str(self.public_key), "--source-commit", "a" * 40,
+            "--tag", "v1.0.0", "--version", "1.0.0", "--namespace", "dev.latchway",
+            "--publishing-type", "automatic", "--output", str(intent),
+        ], check=True)
+        deployment_id = "28570f16-da32-4c14-bd2e-c1acc0782365"
+        subprocess.run([
+            "python3", str(helper), "create-record", "--intent", str(intent),
+            "--deployment-id", deployment_id, "--output", str(record),
+        ], check=True)
+        intent_value = json.loads(intent.read_text(encoding="utf-8"))
+        raw_status.write_text(json.dumps({
+            "deploymentId": deployment_id,
+            "deploymentName": intent_value["deployment_name"],
+            "deploymentState": "PUBLISHED",
+            "purls": intent_value["expected_purls"],
+        }), encoding="utf-8")
+        subprocess.run([
+            "python3", str(helper), "validate-status", "--intent", str(intent),
+            "--record", str(record), "--status", str(raw_status), "--output", str(status),
+        ], check=True, stdout=subprocess.DEVNULL)
+        environment = {
+            "LATCHWAY_CENTRAL_UPLOAD_INTENT": str(intent),
+            "LATCHWAY_CENTRAL_DEPLOYMENT_RECORD": str(record),
+            "LATCHWAY_CENTRAL_DEPLOYMENT_STATUS": str(status),
+            "LATCHWAY_CENTRAL_REQUIRE_DEPLOYMENT_EVIDENCE": "true",
+        }
+        result = self.invoke(extra_environment=environment)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        evidence = json.loads(result.stdout)
+        self.assertEqual(
+            evidence["deployment"]["intent_sha256"],
+            hashlib.sha256(intent.read_bytes()).hexdigest(),
+        )
+
+        status_value = json.loads(status.read_text(encoding="utf-8"))
+        status_value["deployment_state"] = "VALIDATED"
+        status.write_text(json.dumps(status_value), encoding="utf-8")
+        rejected = self.invoke(extra_environment=environment)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("not PUBLISHED", rejected.stderr)
 
 
 if __name__ == "__main__":

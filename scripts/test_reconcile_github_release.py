@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).with_name("reconcile-github-release.py")
@@ -26,6 +27,11 @@ class FakeClient:
         self.created = 0
         self.uploaded: list[str] = []
         self.finalized = 0
+        self.immutable_releases = True
+
+    def immutability_enabled(self, repository: str) -> bool:
+        del repository
+        return self.immutable_releases
 
     def release(self, repository: str, tag: str) -> dict[str, Any] | None:
         del repository, tag
@@ -43,6 +49,7 @@ class FakeClient:
             "tag_name": tag,
             "name": title,
             "draft": True,
+            "immutable": False,
             "prerelease": prerelease,
             "assets": [],
         }
@@ -70,13 +77,21 @@ class FakeClient:
         assert self.value is not None
         self.finalized += 1
         self.value["draft"] = False
+        self.value["immutable"] = True
 
 
-def release(*, draft: bool, assets: list[dict[str, Any]], title: str = "Latchway v1.0.0") -> dict[str, Any]:
+def release(
+    *,
+    draft: bool,
+    assets: list[dict[str, Any]],
+    title: str = "Latchway v1.0.0",
+    immutable: bool | None = None,
+) -> dict[str, Any]:
     return {
         "tag_name": "v1.0.0",
         "name": title,
         "draft": draft,
+        "immutable": not draft if immutable is None else immutable,
         "prerelease": False,
         "assets": assets,
     }
@@ -182,6 +197,64 @@ class ReconciliationTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.Rejected, "missing immutable asset"):
             self.reconcile(client)
         self.assertEqual(client.uploaded, [])
+
+    def test_draft_preparation_predeclares_fixed_assets_and_reports_guard_upload(self) -> None:
+        client = FakeClient()
+        uploaded = MODULE.reconcile(
+            repository="Latchway/example",
+            tag="v1.0.0",
+            title="Latchway v1.0.0",
+            prerelease=False,
+            assets=[self.assets[0]],
+            client=client,
+            draft_only=True,
+            allowed_asset_names={asset.name for asset in self.assets},
+        )
+        self.assertEqual(uploaded, {self.assets[0].name})
+        self.assertEqual(client.finalized, 0)
+        self.assertTrue(client.value["draft"])
+
+    def test_rejects_disabled_immutability_and_nonimmutable_final_release(self) -> None:
+        disabled = FakeClient()
+        disabled.immutable_releases = False
+        with self.assertRaisesRegex(MODULE.Rejected, "not enabled"):
+            self.reconcile(disabled)
+
+        remote_assets = []
+        contents: dict[int, bytes] = {}
+        for identifier, asset in enumerate(self.assets, 1):
+            remote_assets.append({
+                "id": identifier,
+                "name": asset.name,
+                "size": asset.size,
+                "state": "uploaded",
+                "digest": f"sha256:{asset.sha256}",
+            })
+            contents[identifier] = asset.path.read_bytes()
+        mutable = FakeClient(release(draft=False, immutable=False, assets=remote_assets), contents)
+        with self.assertRaisesRegex(MODULE.Rejected, "not immutable"):
+            self.reconcile(mutable)
+
+    def test_settings_check_uses_only_the_protected_administration_token(self) -> None:
+        completed = MODULE.subprocess.CompletedProcess(
+            args=[], returncode=0, stdout='{"enabled":true}', stderr="",
+        )
+        with (
+            patch.dict(
+                MODULE.os.environ,
+                {
+                    "GH_TOKEN": "workflow-token",
+                    "LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN": "administration-token",
+                },
+                clear=False,
+            ),
+            patch.object(MODULE.subprocess, "run", return_value=completed) as run,
+        ):
+            self.assertTrue(MODULE.GitHubClient().immutability_enabled("Latchway/example"))
+            self.assertNotIn("LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN", MODULE.os.environ)
+        environment = run.call_args.kwargs["env"]
+        self.assertEqual(environment["GH_TOKEN"], "administration-token")
+        self.assertNotIn("LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN", environment)
 
 
 if __name__ == "__main__":

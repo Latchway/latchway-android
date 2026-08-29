@@ -438,12 +438,42 @@ class ReleaseWorkflowTests(unittest.TestCase):
         if REPOSITORY_ID != "android":
             self.skipTest("Android-only release recovery")
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-        publish = workflow.index("scripts/publish-central.sh")
-        public_verification = workflow.index("scripts/verify-central-release.sh")
-        reconciliation = workflow.index("python3 scripts/reconcile-github-release.py")
-        self.assertLess(publish, public_verification)
-        self.assertLess(public_verification, reconciliation)
+        draft = workflow.index("Create or resume the fixed-asset GitHub draft")
+        publish = workflow.index("Upload once or resume the exact Portal deployment")
+        durable_id = workflow.index("Durably attach the exact Portal deployment ID before waiting")
+        wait = workflow.index("Wait on only the recorded Portal deployment")
+        public_verification = workflow.index("Verify the immutable public artifacts")
+        checksum_manifest = workflow.index("Seal the complete fixed-asset checksum manifest")
+        final = workflow.index("Attach every fixed asset, publish, and require immutability")
+        self.assertLess(draft, publish)
+        self.assertLess(publish, durable_id)
+        self.assertLess(durable_id, wait)
+        self.assertLess(wait, public_verification)
+        self.assertLess(public_verification, checksum_manifest)
+        self.assertLess(checksum_manifest, final)
+        self.assertLess(public_verification, final)
         self.assertIn("LATCHWAY_CENTRAL_EXPECTED_REPOSITORY", workflow)
+        self.assertIn("maven-central-release-evidence.json", workflow)
+        self.assertIn("maven-central-deployment.json", workflow)
+        self.assertIn("maven-central-deployment-status.json", workflow)
+        self.assertIn("LATCHWAY_CENTRAL_ALLOW_NEW_UPLOAD", workflow)
+        self.assertIn("--guard-asset maven-central-upload-intent.json", workflow)
+        self.assertIn("LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN", workflow)
+        self.assertIn('"repos/$GITHUB_REPOSITORY/immutable-releases"', workflow)
+        automatic_attestation = workflow.index("Verify GitHub automatic release and per-asset attestations")
+        self.assertLess(final, automatic_attestation)
+        self.assertIn('gh release verify "$RELEASE_TAG"', workflow)
+        self.assertIn('gh release verify-asset "$RELEASE_TAG" "$asset"', workflow)
+        for asset in (
+            "maven-repository.zip",
+            "SHA256SUMS",
+            "latchway-maven-signing-public-key.asc",
+            "maven-central-upload-intent.json",
+            "maven-central-deployment.json",
+            "maven-central-deployment-status.json",
+            "maven-central-release-evidence.json",
+        ):
+            self.assertIn(asset, workflow[automatic_attestation:])
         self.assertNotIn("--clobber", workflow)
         self.assertNotIn("gh release create", workflow)
 

@@ -36,6 +36,8 @@ class Asset:
 
 
 class Client(Protocol):
+    def immutability_enabled(self, repository: str) -> bool: ...
+
     def release(self, repository: str, tag: str) -> dict[str, Any] | None: ...
 
     def create(self, repository: str, tag: str, title: str, prerelease: bool) -> None: ...
@@ -48,10 +50,46 @@ class Client(Protocol):
 
 
 class GitHubClient:
+    def immutability_enabled(self, repository: str) -> bool:
+        # Consume the protected token for this one read-only administration
+        # call, then remove it before any draft or asset subprocess can run.
+        administration_token = os.environ.pop("LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN", "")
+        if not administration_token:
+            raise RuntimeError(
+                "LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN is required to read immutable-release settings."
+            )
+        environment = os.environ.copy()
+        environment["GH_TOKEN"] = administration_token
+        result = subprocess.run(
+            [
+                "gh", "api",
+                "-H", "Accept: application/vnd.github+json",
+                "-H", "X-GitHub-Api-Version: 2026-03-10",
+                f"repos/{repository}/immutable-releases",
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=environment,
+        )
+        if result.returncode != 0:
+            return False
+        try:
+            value = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise RuntimeError("GitHub returned invalid immutable-release settings JSON.") from error
+        return isinstance(value, dict) and value.get("enabled") is True
+
     def release(self, repository: str, tag: str) -> dict[str, Any] | None:
         endpoint = f"repos/{repository}/releases/tags/{quote(tag, safe='')}"
         result = subprocess.run(
-            ["gh", "api", endpoint],
+            [
+                "gh", "api",
+                "-H", "Accept: application/vnd.github+json",
+                "-H", "X-GitHub-Api-Version: 2026-03-10",
+                endpoint,
+            ],
             check=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -86,7 +124,12 @@ class GitHubClient:
         endpoint = f"repos/{repository}/releases/assets/{asset_id}"
         with destination.open("wb") as output:
             result = subprocess.run(
-                ["gh", "api", "--method", "GET", "-H", "Accept: application/octet-stream", endpoint],
+                [
+                    "gh", "api", "--method", "GET",
+                    "-H", "Accept: application/octet-stream",
+                    "-H", "X-GitHub-Api-Version: 2026-03-10",
+                    endpoint,
+                ],
                 check=False,
                 stdout=output,
                 stderr=subprocess.PIPE,
@@ -152,8 +195,9 @@ def validate_release(
     tag: str,
     title: str,
     prerelease: bool,
-    expected_assets: list[Asset],
+    expected_names: set[str],
     allow_draft: bool,
+    require_immutable: bool = False,
 ) -> dict[str, dict[str, Any]]:
     if release.get("tag_name") != tag:
         raise Rejected("Existing GitHub release tag does not match the promoted tag.")
@@ -163,10 +207,11 @@ def validate_release(
         raise Rejected("Existing GitHub release prerelease state does not match the promoted version.")
     if not isinstance(release.get("draft"), bool) or (release["draft"] and not allow_draft):
         raise Rejected("Existing GitHub release is not finalized.")
+    if require_immutable and release.get("immutable") is not True:
+        raise Rejected("Final GitHub release is not immutable.")
     raw_assets = release.get("assets")
     if not isinstance(raw_assets, list):
         raise Rejected("Existing GitHub release has an invalid asset list.")
-    expected_names = {asset.name for asset in expected_assets}
     observed: dict[str, dict[str, Any]] = {}
     for raw_asset in raw_assets:
         if not isinstance(raw_asset, dict) or not isinstance(raw_asset.get("name"), str):
@@ -209,7 +254,17 @@ def reconcile(
     prerelease: bool,
     assets: list[Asset],
     client: Client,
-) -> None:
+    draft_only: bool = False,
+    allowed_asset_names: set[str] | None = None,
+) -> set[str]:
+    if not client.immutability_enabled(repository):
+        raise Rejected("GitHub immutable releases are not enabled for this repository.")
+    local_names = {asset.name for asset in assets}
+    expected_names = set(allowed_asset_names or local_names)
+    if not local_names.issubset(expected_names):
+        raise Rejected("Local release assets are not included in the fixed asset set.")
+    if not draft_only and expected_names != local_names:
+        raise Rejected("Final reconciliation requires every fixed release asset locally.")
     release = client.release(repository, tag)
     if release is None:
         client.create(repository, tag, title, prerelease)
@@ -222,7 +277,7 @@ def reconcile(
         tag=tag,
         title=title,
         prerelease=prerelease,
-        expected_assets=assets,
+        expected_names=expected_names,
         allow_draft=True,
     )
     # Prove every existing byte before making any mutation. A mismatched
@@ -231,11 +286,13 @@ def reconcile(
         remote = observed.get(asset.name)
         if remote is not None:
             verify_remote_asset(client, repository, asset, remote)
+    uploaded: set[str] = set()
     for asset in assets:
         if asset.name not in observed:
             if release["draft"] is not True:
                 raise Rejected(f"Final GitHub release is missing immutable asset {asset.name}.")
             client.upload(repository, tag, asset.path)
+            uploaded.add(asset.name)
 
     release = client.release(repository, tag)
     if release is None:
@@ -245,13 +302,24 @@ def reconcile(
         tag=tag,
         title=title,
         prerelease=prerelease,
-        expected_assets=assets,
+        expected_names=expected_names,
         allow_draft=True,
     )
-    if set(observed) != {asset.name for asset in assets}:
-        raise Rejected("GitHub draft release does not contain the complete immutable asset set.")
+    if not local_names.issubset(set(observed)):
+        raise Rejected("GitHub draft release does not contain every supplied immutable asset.")
     for asset in assets:
         verify_remote_asset(client, repository, asset, observed[asset.name])
+
+    if draft_only:
+        if release["draft"] is not True:
+            if set(observed) != expected_names:
+                raise Rejected("Final GitHub release does not contain the fixed asset set.")
+            if release.get("immutable") is not True:
+                raise Rejected("Final GitHub release is not immutable.")
+        return uploaded
+
+    if set(observed) != expected_names:
+        raise Rejected("GitHub draft release does not contain the complete immutable asset set.")
 
     if release["draft"]:
         client.finalize(repository, tag, prerelease)
@@ -264,13 +332,15 @@ def reconcile(
         tag=tag,
         title=title,
         prerelease=prerelease,
-        expected_assets=assets,
+        expected_names=expected_names,
         allow_draft=False,
+        require_immutable=True,
     )
     if set(final_assets) != {asset.name for asset in assets}:
         raise Rejected("Final GitHub release does not contain the complete immutable asset set.")
     for asset in assets:
         verify_remote_asset(client, repository, asset, final_assets[asset.name])
+    return uploaded
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -279,6 +349,10 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--tag", required=True)
     parser.add_argument("--title", required=True)
     parser.add_argument("--prerelease", action="store_true")
+    parser.add_argument("--draft-only", action="store_true")
+    parser.add_argument("--allowed-asset-name", action="append", default=[])
+    parser.add_argument("--guard-asset")
+    parser.add_argument("--github-output", type=Path)
     parser.add_argument("assets", nargs="+")
     arguments = parser.parse_args()
     if not isinstance(arguments.repository, str) or REPOSITORY.fullmatch(arguments.repository) is None:
@@ -287,6 +361,17 @@ def parse_arguments() -> argparse.Namespace:
         parser.error("--tag must be a canonical semantic-version release tag")
     if not arguments.title or "\n" in arguments.title or "\r" in arguments.title:
         parser.error("--title must be a non-empty single line")
+    for name in arguments.allowed_asset_name:
+        if name in {"", ".", ".."} or "/" in name or "\\" in name or len(name) > 255:
+            parser.error("--allowed-asset-name must be a safe file name")
+    if len(arguments.allowed_asset_name) != len(set(arguments.allowed_asset_name)):
+        parser.error("--allowed-asset-name values must be unique")
+    if arguments.allowed_asset_name and not arguments.draft_only:
+        parser.error("--allowed-asset-name is only valid with --draft-only")
+    if arguments.guard_asset and not arguments.draft_only:
+        parser.error("--guard-asset is only valid with --draft-only")
+    if arguments.guard_asset and arguments.guard_asset not in {Path(path).name for path in arguments.assets}:
+        parser.error("--guard-asset must name one supplied local asset")
     return arguments
 
 
@@ -294,18 +379,25 @@ def main() -> int:
     arguments = parse_arguments()
     try:
         assets = inspect_assets(arguments.assets)
-        reconcile(
+        uploaded = reconcile(
             repository=arguments.repository,
             tag=arguments.tag,
             title=arguments.title,
             prerelease=arguments.prerelease,
             assets=assets,
             client=GitHubClient(),
+            draft_only=arguments.draft_only,
+            allowed_asset_names=set(arguments.allowed_asset_name) or None,
         )
+        if arguments.github_output is not None:
+            arguments.github_output.parent.mkdir(parents=True, exist_ok=True)
+            with arguments.github_output.open("a", encoding="utf-8") as output:
+                output.write(f"guard_uploaded={'true' if arguments.guard_asset in uploaded else 'false'}\n")
     except (OSError, Rejected, RuntimeError) as error:
         print(f"release reconciliation rejected: {error}", file=sys.stderr)
         return 1
-    print(f"Verified immutable GitHub release {arguments.repository}@{arguments.tag}")
+    state = "draft" if arguments.draft_only else "immutable release"
+    print(f"Verified GitHub {state} {arguments.repository}@{arguments.tag}")
     return 0
 
 

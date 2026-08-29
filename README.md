@@ -202,8 +202,9 @@ path. Remote publication is not configured during ordinary builds. Run
 `./scripts/verify-local-publication.sh` to publish all five coordinates to an
 isolated local repository and compile independent offline Android consumers
 through both Gradle module metadata and Maven POM metadata.
-See [Publishing](docs/publishing.md) for the credential-safe, user-managed
-Central staging procedure and its external namespace/signing prerequisites.
+See [Publishing](docs/publishing.md) for the single-upload Central Portal
+procedure, durable deployment-ID recovery, fail-closed OpenPGP verification,
+and immutable GitHub release evidence.
 
 ## License
 

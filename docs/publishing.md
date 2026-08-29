@@ -69,77 +69,109 @@ LATCHWAY_MAVEN_CENTRAL_USERNAME
 LATCHWAY_MAVEN_CENTRAL_PASSWORD
 LATCHWAY_SIGNING_KEY
 LATCHWAY_SIGNING_PASSWORD
+LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN
 ```
 
 `LATCHWAY_SIGNING_KEY` is the ASCII-armored private key, not a key-ring path.
-Gradle user-home properties are also supported for controlled local release
-environments:
+Gradle user-home properties remain supported only for controlled local signing
+operations:
 
 ```text
-latchway.central.username
-latchway.central.password
 latchway.signing.key
 latchway.signing.password
 ```
 
-Never add those properties to the repository's `gradle.properties`. Release
-signing uses Gradle's in-memory OpenPGP signer. Central tasks are marked
-incompatible with the configuration cache, and the release script always uses
-`--no-configuration-cache`. The build rejects any signing-enabled invocation
-while that cache is active, before it reads credential or private-key values,
-so secret material is not persisted there.
+Never add those properties to the repository's `gradle.properties`. Direct
+Gradle uploads are disabled: the task fails with instructions to use the
+deployment-recording release script. The build also rejects signing while the
+configuration cache is active, before it reads private-key values, so secret
+material is not persisted there.
 
 ## Stage a release
 
-Export the four secret inputs, then run:
+The protected `repository_dispatch` workflow is the supported final-release
+entry point because it atomically coordinates the draft assets and single-use
+guard. For a controlled local `user_managed` rehearsal, first build the reviewed
+repository, export the reviewed public key, and create the intent:
 
 ```shell
-LATCHWAY_RELEASE_VERSION=1.0.0 ./scripts/publish-central.sh
+scripts/build-release-artifacts.sh 1.0.0
+python3 scripts/central-deployment-record.py create-intent \
+  --repository build/release/repository \
+  --archive build/release/latchway-android-1.0.0-maven-repository.zip \
+  --public-key build/release/latchway-maven-signing-public-key.asc \
+  --source-commit "$(git rev-parse HEAD)" \
+  --tag v1.0.0 --version 1.0.0 --namespace dev.latchway \
+  --publishing-type user_managed \
+  --output build/release/maven-central-upload-intent.json
 ```
 
-The script performs the local publication/consumer gate and the full Gradle
-`test assemble lint` gate before it enables the remote repository. It uses
-Gradle's built-in `maven-publish` plugin to upload signed artifacts to
-Sonatype's Portal OSSRH staging compatibility endpoint. It then transfers the
-staging repository from the same network address into the Central Publisher
-Portal with `publishing_type=user_managed`.
+After independently retaining that intent, authorize exactly one upload:
 
-This workflow follows Sonatype's current
-[Portal OSSRH staging API guide](https://central.sonatype.org/publish/publish-portal-ossrh-staging-api/),
-which explicitly lists Gradle's built-in `maven-publish` plugin as compatible
-when the documented manual endpoint is used. Artifacts are uploaded to
-`https://ossrh-staging-api.central.sonatype.com/service/local/staging/deploy/maven2/`,
-then the script sends an authenticated same-IP `POST` to
-`/manual/upload/defaultRepository/dev.latchway?publishing_type=user_managed`.
-Authentication uses a Central Publisher Portal user token as the guide
-requires. This is the Portal's supported compatibility service, not either of
-the retired `oss.sonatype.org`/`s01.oss.sonatype.org` OSSRH endpoints; Sonatype
-documents that [legacy OSSRH reached end of life on June 30,
-2025](https://central.sonatype.org/pages/ossrh-eol/). Sonatype also currently
-states that it offers [no official Gradle Portal
-plugin](https://central.sonatype.org/publish/publish-portal-gradle/), which is
-why this repository keeps the built-in publication path rather than taking a
-dependency on an unsupported community plugin.
+```shell
+LATCHWAY_RELEASE_VERSION=1.0.0 \
+LATCHWAY_CENTRAL_UPLOAD_INTENT=build/release/maven-central-upload-intent.json \
+LATCHWAY_CENTRAL_DEPLOYMENT_RECORD=build/release/maven-central-deployment.json \
+LATCHWAY_CENTRAL_DEPLOYMENT_STATUS=build/release/maven-central-deployment-status.json \
+LATCHWAY_CENTRAL_ALLOW_NEW_UPLOAD=true \
+LATCHWAY_CENTRAL_SIGNING_PUBLIC_KEY=build/release/latchway-maven-signing-public-key.asc \
+./scripts/publish-central.sh
+```
+
+Set `LATCHWAY_CENTRAL_ALLOW_NEW_UPLOAD=false` on every continuation. Copy the
+deployment record to durable storage immediately after the upload returns.
+
+The script performs the local publication/consumer gate and the full Gradle
+`test assemble lint` gate before any new upload. It copies the twice-reproduced
+repository, adds detached signatures with the pinned OpenPGP primary key (a
+signing subkey is supported), verifies every GnuPG machine-status record, and
+uploads that bundle through Sonatype's documented
+[Portal Publisher API](https://central.sonatype.org/publish/publish-portal-api/).
+The API returns an exact deployment UUID. That UUID is bound to the source
+commit, reviewed repository archive, public key, expected PURLs, and a
+single-use upload intent before the workflow waits on the deployment.
 
 The script defaults to `user_managed`, so an operator can inspect the deployment
 in the Publisher Portal and explicitly publish or drop it. The protected tag
 workflow sets `LATCHWAY_CENTRAL_PUBLISHING_TYPE=automatic`; Sonatype then
-publishes only after validation succeeds. The workflow waits for Maven Central,
+publishes only after validation succeeds. The workflow queries only the
+recorded UUID, waits for Maven Central,
 downloads every POM, Gradle module, AAR, sources JAR, and Javadoc JAR, compares
 every primary artifact and MD5/SHA-1/SHA-256/SHA-512 sidecar byte for byte with
 the reproducible repository assembled earlier in the run, and cryptographically
 verifies every detached OpenPGP signature against the reviewed public key and
-pinned fingerprint. It reconciles the GitHub release only after that proof.
-Existing release assets are downloaded and compared, missing draft assets are
-attached without `--clobber`, and mismatched final state is rejected. Maven
-Central versions are immutable.
+pinned primary fingerprint. GnuPG output is parsed fail-closed: revoked,
+expired, bad, unknown, ambiguous, or wrong-primary status is rejected.
 
-The `maven-central` GitHub environment must protect the four publication
-secrets and require an authorized reviewer. The release tag must be annotated,
+Before the first Portal request, the workflow requires GitHub immutable
+releases to be enabled, creates or resumes a draft, predeclares the complete
+fixed asset set, and attaches the single-use intent. It then durably attaches
+the deployment record before waiting. Post-registry evidence retains hashes of
+every artifact and checksum sidecar, every exact armored signature, normalized
+GnuPG status, the reviewed public-key hash, and the deployment record/status.
+Only after those files exist does the workflow seal `SHA256SUMS` over all six
+other fixed assets, attest that manifest, and attach it to the draft.
+Only after every asset is attached does it publish the GitHub release, and it
+requires the release API to report `immutable: true`. It then runs
+`gh release verify TAG --format json` and `gh release verify-asset TAG PATH
+--format json` for every exact local asset, with bounded retries for GitHub's
+automatic attestation propagation. A rerun downloads and byte-compares the
+immutable assets without mutation.
+
+The `maven-central` GitHub environment must protect all five release secrets and
+require an authorized reviewer. `LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN` is a
+short-lived, least-privilege fine-grained token used only by the protected
+preflight and read-only reconciliation checks for the repository immutable-
+release administration setting; ordinary release mutations still use
+`github.token`. Keep the administration token out of build and signing steps.
+The release tag must be annotated,
 must identify the checked-out commit, and must exactly match the source SDK
 version. `contract.lock` must identify a released core contract, and the
-changelog must contain the matching release section. The workflow also creates
-a GitHub build-provenance attestation for the deterministic repository bundle.
+changelog must contain the matching release section. Repository or organization
+settings must enable GitHub immutable releases before the tag workflow starts.
+The workflow creates GitHub build-provenance attestations for the deterministic
+repository, reviewed public key, upload intent, deployment record/status, and
+`maven-central-release-evidence.json`.
 
 For a release-candidate rehearsal before a tag exists, an authorized release
 operator may set `LATCHWAY_ALLOW_UNTAGGED_RELEASE_FOR_STAGING=true`. The clean
@@ -148,19 +180,21 @@ apply. Do not use that override for the final release.
 
 ## Failure recovery
 
-Rerunning an exact promotion is safe once any module is visible publicly: the
-script does not upload again, waits for all five coordinates, and requires all
-public bytes to match the reviewed repository. If an upload fails before any
-module becomes visible, do not retry blindly: the compatibility service may
-retain an incomplete repository for the uploader's account and network address.
-Find it through the Portal OSSRH staging manual search endpoint, inspect it, and
-either transfer or drop that exact repository before retrying. Never publish a
-partially validated or ambiguous deployment.
+Rerunning an exact promotion is safe once the deployment record exists: the
+script validates its hash binding, queries that UUID, and never invokes the
+upload endpoint again. If a run stops after the single-use intent is attached
+but before the UUID is durably attached, the next run fails closed. Recover the
+original UUID in the Central Portal, review it against the deterministic
+deployment name and exact five PURLs, create the matching record, and resume.
+Never delete the intent or authorize a second upload to work around an uncertain
+outcome. Once any coordinate is public, the script also refuses another upload
+and verifies all five immutable coordinates byte for byte.
 
 Current official references:
 
 - [Sonatype: Gradle publishing through the Central Portal](https://central.sonatype.org/publish/publish-portal-gradle/)
-- [Sonatype: Portal OSSRH staging API](https://central.sonatype.org/publish/publish-portal-ossrh-staging-api/)
+- [Sonatype: Portal Publisher API](https://central.sonatype.org/publish/publish-portal-api/)
 - [Gradle: Maven Publish plugin](https://docs.gradle.org/current/userguide/publishing_maven.html)
 - [Gradle: Signing plugin](https://docs.gradle.org/current/userguide/signing_plugin.html)
 - [Android: Configure publication variants](https://developer.android.com/build/publish-library/configure-pub-variants)
+- [GitHub: Verify release integrity](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/secure-your-dependencies/verify-release-integrity)

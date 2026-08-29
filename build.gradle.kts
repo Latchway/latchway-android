@@ -1,12 +1,10 @@
 import org.gradle.api.GradleException
-import org.gradle.api.artifacts.repositories.PasswordCredentials
 import org.gradle.api.configuration.BuildFeatures
 import org.gradle.api.publish.PublishingExtension
 import org.gradle.api.publish.maven.MavenPublication
 import org.gradle.api.publish.maven.tasks.PublishToMavenRepository
 import org.gradle.api.tasks.bundling.AbstractArchiveTask
 import org.gradle.api.tasks.Delete
-import org.gradle.authentication.http.BasicAuthentication
 import org.gradle.plugins.signing.Sign
 import org.gradle.plugins.signing.SigningExtension
 import javax.inject.Inject
@@ -97,7 +95,12 @@ val explicitSigningEnabled = providers.gradleProperty("latchway.signing.enabled"
     .map { it.toBooleanStrict() }
     .orElse(false)
     .get()
-val signingEnabled = centralPublishingEnabled || explicitSigningEnabled
+if (centralPublishingEnabled) {
+    throw GradleException(
+        "Direct Gradle Central uploads are disabled; use scripts/publish-central.sh so the Portal deployment ID is recorded before any retry",
+    )
+}
+val signingEnabled = explicitSigningEnabled
 
 val configurationCacheActive = objects.newInstance<InjectedBuildFeatures>()
     .buildFeatures
@@ -106,14 +109,10 @@ val configurationCacheActive = objects.newInstance<InjectedBuildFeatures>()
     .get()
 if (signingEnabled && configurationCacheActive) {
     throw GradleException(
-        "Signing and Central publication require --no-configuration-cache so secret material cannot be persisted",
+        "Signing requires --no-configuration-cache so secret material cannot be persisted",
     )
 }
 
-val centralUsername = providers.gradleProperty("latchway.central.username")
-    .orElse(providers.environmentVariable("LATCHWAY_MAVEN_CENTRAL_USERNAME"))
-val centralPassword = providers.gradleProperty("latchway.central.password")
-    .orElse(providers.environmentVariable("LATCHWAY_MAVEN_CENTRAL_PASSWORD"))
 val signingKey = providers.gradleProperty("latchway.signing.key")
     .orElse(providers.environmentVariable("LATCHWAY_SIGNING_KEY"))
 val signingPassword = providers.gradleProperty("latchway.signing.password")
@@ -123,16 +122,6 @@ fun requiredSecret(value: String?, name: String): String =
     value?.takeIf(String::isNotBlank)
         ?: throw GradleException("$name is required for the explicitly enabled publication operation")
 
-val centralUsernameValue = if (centralPublishingEnabled) {
-    requiredSecret(centralUsername.orNull, "Maven Central username")
-} else {
-    null
-}
-val centralPasswordValue = if (centralPublishingEnabled) {
-    requiredSecret(centralPassword.orNull, "Maven Central password")
-} else {
-    null
-}
 val signingKeyValue = if (signingEnabled) {
     requiredSecret(signingKey.orNull, "ASCII-armored OpenPGP signing key")
 } else {
@@ -142,10 +131,6 @@ val signingPasswordValue = if (signingEnabled) {
     requiredSecret(signingPassword.orNull, "OpenPGP signing password")
 } else {
     null
-}
-
-if (centralPublishingEnabled && releaseVersion.endsWith("-SNAPSHOT")) {
-    throw GradleException("Maven Central publication requires a non-SNAPSHOT latchway.version")
 }
 
 val cleanPublicationTestRepository = tasks.register<Delete>("cleanPublicationTestRepository") {
@@ -229,22 +214,6 @@ publishedModules.forEach { module ->
             url = rootProject.layout.buildDirectory.dir("publication-test-repository").get().asFile.toURI()
         }
 
-        if (centralPublishingEnabled) {
-            publishing.repositories.maven {
-                name = "central"
-                url = uri(
-                    "https://ossrh-staging-api.central.sonatype.com/service/local/staging/deploy/maven2/",
-                )
-                credentials(PasswordCredentials::class.java) {
-                    username = centralUsernameValue
-                    password = centralPasswordValue
-                }
-                authentication {
-                    create("basic", BasicAuthentication::class.java)
-                }
-            }
-        }
-
         target.plugins.withId("signing") {
             if (signingEnabled) {
                 target.extensions.configure(SigningExtension::class.java) {
@@ -264,11 +233,6 @@ publishedModules.forEach { module ->
             if (repository.name == "publicationTest") {
                 dependsOn(cleanPublicationTestRepository)
             }
-            if (repository.name == "central") {
-                notCompatibleWithConfigurationCache(
-                    "Maven Central credentials must never be retained in the configuration cache.",
-                )
-            }
         }
     }
 }
@@ -284,14 +248,10 @@ tasks.register("publishPublicArtifactsToPublicationTestRepository") {
 
 tasks.register("publishPublicArtifactsToCentralRepository") {
     group = "publishing"
-    description = "Stages all five signed public artifacts through the Maven Central compatibility API."
-    if (centralPublishingEnabled) {
-        dependsOn(publishedModules.map { "${it.path}:publishReleasePublicationToCentralRepository" })
-    } else {
-        doFirst {
-            throw GradleException(
-                "Central publication is disabled; explicitly set -Platchway.central.enabled=true and provide release credentials",
-            )
-        }
+    description = "Rejects unsafe direct uploads; use the deployment-recording release script."
+    doFirst {
+        throw GradleException(
+            "Direct Gradle Central uploads are disabled; use scripts/publish-central.sh",
+        )
     }
 }

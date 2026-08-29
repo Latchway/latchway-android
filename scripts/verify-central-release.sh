@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_directory=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
 if [[ $# -ne 1 || ! "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "usage: $0 MAJOR.MINOR.PATCH" >&2
   exit 64
@@ -36,6 +38,7 @@ if [[ -n "$expected_repository" ]]; then
 fi
 temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/latchway-central-verify.XXXXXX")
 proof_rows="$temporary_root/proof.tsv"
+mkdir "$temporary_root/gpg-proof"
 cleanup() {
   rm -rf "$temporary_root"
 }
@@ -108,8 +111,12 @@ for module in "${modules[@]}"; do
         echo "Maven Central signature verification failed for $name" >&2
         exit 1
       }
-      grep -Eq "^\[GNUPG:\] VALIDSIG $expected_signing_fingerprint " "$signature_status" || {
-        echo "Maven Central signature does not use the pinned key for $name" >&2
+      signature_proof="$temporary_root/gpg-proof/$name.json"
+      python3 "$script_directory/verify-gpg-status.py" \
+        --status "$signature_status" \
+        --expected-primary-fingerprint "$expected_signing_fingerprint" \
+        > "$signature_proof" || {
+        echo "Maven Central signature status is invalid for $name" >&2
         exit 1
       }
     fi
@@ -158,10 +165,10 @@ for module in "${modules[@]}"; do
         }
       done
     fi
-    printf '%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\n' \
       "$module/$version/$name" "$actual" \
       "$(wc -c < "$temporary_root/$name" | tr -d '[:space:]')" \
-      "$signature_sha256" >> "$proof_rows"
+      "$signature_sha256" "$temporary_root/gpg-proof/$name.json" >> "$proof_rows"
   done
   grep -Fq "<tag>v$version</tag>" "$temporary_root/$module-$version.pom" || {
     echo "Maven Central POM metadata is invalid for $module" >&2
@@ -173,23 +180,117 @@ public_key_sha256=
 if [[ -n "$expected_signing_public_key" ]]; then
   public_key_sha256=$(shasum -a 256 "$expected_signing_public_key" | awk '{print $1}')
 fi
-python3 - "$version" "$expected_repository" "$expected_signing_fingerprint" "$public_key_sha256" "$proof_rows" "$temporary_root" <<'PY'
+deployment_intent=${LATCHWAY_CENTRAL_UPLOAD_INTENT:-}
+deployment_record=${LATCHWAY_CENTRAL_DEPLOYMENT_RECORD:-}
+deployment_status=${LATCHWAY_CENTRAL_DEPLOYMENT_STATUS:-}
+require_deployment_evidence=${LATCHWAY_CENTRAL_REQUIRE_DEPLOYMENT_EVIDENCE:-false}
+if [[ "$require_deployment_evidence" == true ]]; then
+  [[ -f "$deployment_intent" && -f "$deployment_record" && -f "$deployment_status" ]] || {
+    echo "Exact Central upload intent, deployment record, and final status evidence are required" >&2
+    exit 64
+  }
+elif [[ "$require_deployment_evidence" != false ]]; then
+  echo "LATCHWAY_CENTRAL_REQUIRE_DEPLOYMENT_EVIDENCE must be true or false" >&2
+  exit 64
+fi
+python3 - "$version" "$expected_repository" "$expected_signing_fingerprint" "$public_key_sha256" \
+  "$proof_rows" "$temporary_root" "$deployment_intent" "$deployment_record" "$deployment_status" <<'PY'
+import hashlib
 import json
 from pathlib import Path
 import sys
 
-version, expected_repository, signing_fingerprint, public_key_sha256, rows_path, temporary_root = sys.argv[1:]
+(
+    version,
+    expected_repository,
+    signing_fingerprint,
+    public_key_sha256,
+    rows_path,
+    temporary_root,
+    deployment_intent,
+    deployment_record,
+    deployment_status,
+) = sys.argv[1:]
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 files = []
 for line in Path(rows_path).read_text(encoding="utf-8").splitlines():
-    path, sha256, size, signature_sha256 = line.split("\t")
+    path, artifact_sha256, size, signature_sha256, gpg_proof_path = line.split("\t")
+    name = Path(path).name
+    signature = Path(temporary_root, f"{name}.asc")
+    if signature.stat().st_size > 65536:
+        raise SystemExit(f"signature is unexpectedly large: {name}")
+    checksums = []
+    for algorithm in ("md5", "sha1", "sha256", "sha512"):
+        checksum = Path(temporary_root, f"{name}.{algorithm}")
+        if checksum.stat().st_size > 256:
+            raise SystemExit(f"checksum is unexpectedly large: {name}.{algorithm}")
+        checksums.append({
+            "algorithm": algorithm,
+            "path": f"{path}.{algorithm}",
+            "bytes": checksum.stat().st_size,
+            "sha256": sha256(checksum),
+            "published_digest": checksum.read_text(encoding="ascii").strip(),
+        })
+    gpg_status = None
+    if expected_repository:
+        gpg_status = json.loads(Path(gpg_proof_path).read_text(encoding="utf-8"))
     files.append({
         "path": path,
-        "sha256": sha256,
+        "sha256": artifact_sha256,
         "bytes": int(size),
         "signature_sha256": signature_sha256,
-        "signature_armored": (Path(temporary_root) / f"{Path(path).name}.asc").read_text(encoding="ascii"),
+        "signature_bytes": signature.stat().st_size,
+        "signature_armored": signature.read_text(encoding="ascii"),
+        "gpg_status": gpg_status,
+        "checksums": checksums,
         "checksums_byte_identical": bool(expected_repository),
     })
+
+deployment = None
+if deployment_intent or deployment_record or deployment_status:
+    if not deployment_intent or not deployment_record or not deployment_status:
+        raise SystemExit("deployment intent, record, and status must be supplied together")
+    intent_path = Path(deployment_intent)
+    record_path = Path(deployment_record)
+    status_path = Path(deployment_status)
+    intent = json.loads(intent_path.read_text(encoding="utf-8"))
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    intent_sha256 = sha256(intent_path)
+    record_sha256 = sha256(record_path)
+    if intent.get("schema") != "latchway.maven-central-upload-intent.v1":
+        raise SystemExit("deployment intent schema is invalid")
+    if intent.get("version") != version or intent.get("namespace") != "dev.latchway":
+        raise SystemExit("deployment intent coordinates are invalid")
+    if record.get("schema") != "latchway.maven-central-deployment.v1":
+        raise SystemExit("deployment record schema is invalid")
+    if record.get("intent_sha256") != intent_sha256:
+        raise SystemExit("deployment record is not bound to the upload intent")
+    if status.get("schema") != "latchway.maven-central-deployment-status.v1":
+        raise SystemExit("deployment status schema is invalid")
+    if status.get("deployment_state") != "PUBLISHED":
+        raise SystemExit("deployment status is not PUBLISHED")
+    if status.get("intent_sha256") != intent_sha256 or status.get("record_sha256") != record_sha256:
+        raise SystemExit("deployment status hash bindings are invalid")
+    if status.get("deployment_id") != record.get("deployment_id"):
+        raise SystemExit("deployment status ID differs from the immutable record")
+    deployment = {
+        "intent_sha256": intent_sha256,
+        "record_sha256": record_sha256,
+        "status_sha256": sha256(status_path),
+        "record": record,
+        "status": status,
+    }
+
 print(json.dumps({
     "schema_version": 1,
     "registry": "maven_central",
@@ -202,6 +303,7 @@ print(json.dumps({
     "signatures_cryptographically_verified": bool(expected_repository),
     "signing_fingerprint": signing_fingerprint,
     "reviewed_public_key_sha256": public_key_sha256,
+    "deployment": deployment,
     "files": files,
 }, indent=2, sort_keys=True))
 PY

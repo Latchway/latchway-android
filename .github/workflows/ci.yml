@@ -37,6 +37,16 @@ jobs:
           python3 scripts/test-device-evidence.py
           python3 scripts/test-verify-gateway-deployment.py
           bash -n scripts/gateway-deployment-evidence.sh scripts/run-physical-play-integrity.sh
+      - name: Test fail-closed release publication and evidence
+        run: |
+          python3 scripts/test_verify_gpg_status.py
+          python3 scripts/test_verify_central_release.py
+          python3 scripts/test_central_deployment_record.py
+          python3 scripts/test_publish_central_policy.py
+          python3 scripts/test_reconcile_github_release.py
+          python3 scripts/test_release_promotion.py
+          bash -n scripts/build-central-portal-bundle.sh \
+            scripts/publish-central.sh scripts/verify-central-release.sh
       - name: Publish and compile an independent offline consumer
         run: ./scripts/verify-local-publication.sh
       - name: Retain the verified test Maven repository

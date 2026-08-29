@@ -165,6 +165,19 @@ jobs:
           test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
           test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$RELEASE_COMMIT"
           scripts/release-preflight.sh "$RELEASE_TAG"
+      - name: Require protected immutable-release administration policy
+        env:
+          GH_TOKEN: ${{ secrets.LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN"
+          gh release verify --help >/dev/null
+          gh release verify-asset --help >/dev/null
+          enabled=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "repos/$GITHUB_REPOSITORY/immutable-releases" --jq .enabled)
+          test "$enabled" = true
       - name: Configure Java 17
         uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
         with:
@@ -199,32 +212,157 @@ jobs:
             --export "$LATCHWAY_CENTRAL_SIGNING_FINGERPRINT" \
             > build/release/latchway-maven-signing-public-key.asc
           test -s build/release/latchway-maven-signing-public-key.asc
-          (cd build/release && shasum -a 256 latchway-maven-signing-public-key.asc >> SHA256SUMS)
       - name: Attest the exact release bundle
         uses: actions/attest-build-provenance@e4d4f7c39adfa4c260fb5c147f0622000aa14b99 # v4.0.0
         with:
           subject-path: |
             build/release/latchway-android-*-maven-repository.zip
             build/release/latchway-maven-signing-public-key.asc
-      - name: Publish signed artifacts to Maven Central
+      - name: Create the single-use Maven Central upload intent
+        env:
+          LATCHWAY_RELEASE_VERSION: ${{ needs.promote.outputs.version }}
+        run: |
+          python3 scripts/central-deployment-record.py create-intent \
+            --repository build/release/repository \
+            --archive "build/release/latchway-android-$LATCHWAY_RELEASE_VERSION-maven-repository.zip" \
+            --public-key build/release/latchway-maven-signing-public-key.asc \
+            --source-commit "$RELEASE_COMMIT" \
+            --tag "$RELEASE_TAG" \
+            --version "$LATCHWAY_RELEASE_VERSION" \
+            --namespace dev.latchway \
+            --publishing-type automatic \
+            --output build/release/maven-central-upload-intent.json
+      - name: Attest the exact upload intent
+        uses: actions/attest-build-provenance@e4d4f7c39adfa4c260fb5c147f0622000aa14b99 # v4.0.0
+        with:
+          subject-path: build/release/maven-central-upload-intent.json
+      - name: Create or resume the fixed-asset GitHub draft
+        id: draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN: ${{ secrets.LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN }}
+        run: |
+          python3 scripts/reconcile-github-release.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --tag "$RELEASE_TAG" \
+            --title "$RELEASE_TAG" \
+            --draft-only \
+            --guard-asset maven-central-upload-intent.json \
+            --github-output "$GITHUB_OUTPUT" \
+            --allowed-asset-name "latchway-android-${{ needs.promote.outputs.version }}-maven-repository.zip" \
+            --allowed-asset-name SHA256SUMS \
+            --allowed-asset-name latchway-maven-signing-public-key.asc \
+            --allowed-asset-name maven-central-upload-intent.json \
+            --allowed-asset-name maven-central-deployment.json \
+            --allowed-asset-name maven-central-deployment-status.json \
+            --allowed-asset-name maven-central-release-evidence.json \
+            "build/release/latchway-android-${{ needs.promote.outputs.version }}-maven-repository.zip" \
+            build/release/latchway-maven-signing-public-key.asc \
+            build/release/maven-central-upload-intent.json
+      - name: Restore an exact deployment record from the draft when present
+        id: restore
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
+          count=$(jq '[.assets[] | select(.name == "maven-central-deployment.json")] | length' <<<"$release")
+          test "$count" -le 1
+          if test "$count" = 1; then
+            asset_id=$(jq -r '.assets[] | select(.name == "maven-central-deployment.json") | .id' <<<"$release")
+            gh api --method GET -H "Accept: application/octet-stream" \
+              "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" \
+              > build/release/maven-central-deployment.json
+            echo "record_present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "record_present=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Upload once or resume the exact Portal deployment
         env:
           LATCHWAY_RELEASE_VERSION: ${{ needs.promote.outputs.version }}
           LATCHWAY_CENTRAL_PUBLISHING_TYPE: automatic
+          LATCHWAY_CENTRAL_UPLOAD_INTENT: ${{ github.workspace }}/build/release/maven-central-upload-intent.json
+          LATCHWAY_CENTRAL_DEPLOYMENT_RECORD: ${{ github.workspace }}/build/release/maven-central-deployment.json
+          LATCHWAY_CENTRAL_DEPLOYMENT_STATUS: ${{ github.workspace }}/build/release/maven-central-deployment-status.json
+          LATCHWAY_CENTRAL_ALLOW_NEW_UPLOAD: ${{ steps.draft.outputs.guard_uploaded }}
+          LATCHWAY_CENTRAL_STOP_AFTER_RECORD: "true"
+          LATCHWAY_CENTRAL_SKIP_LOCAL_GATES: "true"
           LATCHWAY_MAVEN_CENTRAL_USERNAME: ${{ secrets.LATCHWAY_MAVEN_CENTRAL_USERNAME }}
           LATCHWAY_MAVEN_CENTRAL_PASSWORD: ${{ secrets.LATCHWAY_MAVEN_CENTRAL_PASSWORD }}
           LATCHWAY_SIGNING_KEY: ${{ secrets.LATCHWAY_SIGNING_KEY }}
           LATCHWAY_SIGNING_PASSWORD: ${{ secrets.LATCHWAY_SIGNING_PASSWORD }}
           LATCHWAY_CENTRAL_SIGNING_PUBLIC_KEY: ${{ github.workspace }}/build/release/latchway-maven-signing-public-key.asc
         run: scripts/publish-central.sh
+      - name: Durably attach the exact Portal deployment ID before waiting
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN: ${{ secrets.LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN }}
+        run: |
+          python3 scripts/reconcile-github-release.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --tag "$RELEASE_TAG" \
+            --title "$RELEASE_TAG" \
+            --draft-only \
+            --allowed-asset-name "latchway-android-${{ needs.promote.outputs.version }}-maven-repository.zip" \
+            --allowed-asset-name SHA256SUMS \
+            --allowed-asset-name latchway-maven-signing-public-key.asc \
+            --allowed-asset-name maven-central-upload-intent.json \
+            --allowed-asset-name maven-central-deployment.json \
+            --allowed-asset-name maven-central-deployment-status.json \
+            --allowed-asset-name maven-central-release-evidence.json \
+            "build/release/latchway-android-${{ needs.promote.outputs.version }}-maven-repository.zip" \
+            build/release/latchway-maven-signing-public-key.asc \
+            build/release/maven-central-upload-intent.json \
+            build/release/maven-central-deployment.json
+      - name: Wait on only the recorded Portal deployment
+        env:
+          LATCHWAY_RELEASE_VERSION: ${{ needs.promote.outputs.version }}
+          LATCHWAY_CENTRAL_PUBLISHING_TYPE: automatic
+          LATCHWAY_CENTRAL_UPLOAD_INTENT: ${{ github.workspace }}/build/release/maven-central-upload-intent.json
+          LATCHWAY_CENTRAL_DEPLOYMENT_RECORD: ${{ github.workspace }}/build/release/maven-central-deployment.json
+          LATCHWAY_CENTRAL_DEPLOYMENT_STATUS: ${{ github.workspace }}/build/release/maven-central-deployment-status.json
+          LATCHWAY_CENTRAL_ALLOW_NEW_UPLOAD: "false"
+          LATCHWAY_CENTRAL_STOP_AFTER_RECORD: "false"
+          LATCHWAY_MAVEN_CENTRAL_USERNAME: ${{ secrets.LATCHWAY_MAVEN_CENTRAL_USERNAME }}
+          LATCHWAY_MAVEN_CENTRAL_PASSWORD: ${{ secrets.LATCHWAY_MAVEN_CENTRAL_PASSWORD }}
+        run: scripts/publish-central.sh
       - name: Verify the immutable public artifacts
         env:
           LATCHWAY_CENTRAL_EXPECTED_REPOSITORY: ${{ github.workspace }}/build/release/repository
           LATCHWAY_CENTRAL_SIGNING_PUBLIC_KEY: ${{ github.workspace }}/build/release/latchway-maven-signing-public-key.asc
+          LATCHWAY_CENTRAL_UPLOAD_INTENT: ${{ github.workspace }}/build/release/maven-central-upload-intent.json
+          LATCHWAY_CENTRAL_DEPLOYMENT_RECORD: ${{ github.workspace }}/build/release/maven-central-deployment.json
+          LATCHWAY_CENTRAL_DEPLOYMENT_STATUS: ${{ github.workspace }}/build/release/maven-central-deployment-status.json
+          LATCHWAY_CENTRAL_REQUIRE_DEPLOYMENT_EVIDENCE: "true"
           LATCHWAY_RELEASE_VERSION: ${{ needs.promote.outputs.version }}
-        run: scripts/verify-central-release.sh "$LATCHWAY_RELEASE_VERSION"
-      - name: Reconcile immutable GitHub release assets after registry verification
+        run: |
+          scripts/verify-central-release.sh "$LATCHWAY_RELEASE_VERSION" \
+            > build/release/maven-central-release-evidence.json
+      - name: Seal the complete fixed-asset checksum manifest
+        working-directory: build/release
+        run: |
+          set -euo pipefail
+          sha256sum \
+            "latchway-android-${{ needs.promote.outputs.version }}-maven-repository.zip" \
+            latchway-maven-signing-public-key.asc \
+            maven-central-upload-intent.json \
+            maven-central-deployment.json \
+            maven-central-deployment-status.json \
+            maven-central-release-evidence.json \
+            > SHA256SUMS
+          sha256sum --check --strict SHA256SUMS
+      - name: Attest the exact post-Central evidence
+        uses: actions/attest-build-provenance@e4d4f7c39adfa4c260fb5c147f0622000aa14b99 # v4.0.0
+        with:
+          subject-path: |
+            build/release/maven-central-deployment.json
+            build/release/maven-central-deployment-status.json
+            build/release/maven-central-release-evidence.json
+            build/release/SHA256SUMS
+      - name: Attach every fixed asset, publish, and require immutability
         env:
           GH_TOKEN: ${{ github.token }}
+          LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN: ${{ secrets.LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN }}
         run: |
           python3 scripts/reconcile-github-release.py \
             --repository "$GITHUB_REPOSITORY" \
@@ -232,4 +370,51 @@ jobs:
             --title "$RELEASE_TAG" \
             "build/release/latchway-android-${{ needs.promote.outputs.version }}-maven-repository.zip" \
             build/release/SHA256SUMS \
+            build/release/latchway-maven-signing-public-key.asc \
+            build/release/maven-central-upload-intent.json \
+            build/release/maven-central-deployment.json \
+            build/release/maven-central-deployment-status.json \
+            build/release/maven-central-release-evidence.json
+      - name: Verify GitHub automatic release and per-asset attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          attestation_dir="$RUNNER_TEMP/github-release-attestations"
+          mkdir -p "$attestation_dir"
+          verified=false
+          for attempt in $(seq 1 12); do
+            if gh release verify "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --format json \
+              > "$attestation_dir/release.json"; then
+              verified=true
+              break
+            fi
+            test "$attempt" = 12 || sleep 10
+          done
+          test "$verified" = true
+          jq -e '(type == "object" and length > 0) or (type == "array" and length > 0)' \
+            "$attestation_dir/release.json" >/dev/null
+
+          assets=(
+            "build/release/latchway-android-${{ needs.promote.outputs.version }}-maven-repository.zip"
+            build/release/SHA256SUMS
             build/release/latchway-maven-signing-public-key.asc
+            build/release/maven-central-upload-intent.json
+            build/release/maven-central-deployment.json
+            build/release/maven-central-deployment-status.json
+            build/release/maven-central-release-evidence.json
+          )
+          for asset in "${assets[@]}"; do
+            proof="$attestation_dir/$(basename "$asset").json"
+            verified=false
+            for attempt in $(seq 1 12); do
+              if gh release verify-asset "$RELEASE_TAG" "$asset" \
+                --repo "$GITHUB_REPOSITORY" --format json > "$proof"; then
+                verified=true
+                break
+              fi
+              test "$attempt" = 12 || sleep 10
+            done
+            test "$verified" = true
+            jq -e '(type == "object" and length > 0) or (type == "array" and length > 0)' "$proof" >/dev/null
+          done
