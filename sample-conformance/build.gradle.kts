@@ -11,7 +11,7 @@ android {
         minSdk = 23
         targetSdk = 37
         versionCode = providers.gradleProperty("latchway.versionCode").orElse("1").get().toInt()
-        versionName = providers.gradleProperty("latchway.versionName").orElse("0.1.0").get()
+        versionName = providers.gradleProperty("latchway.versionName").orElse("1.0.0").get()
         manifestPlaceholders["latchwayGatewayUrl"] = providers.gradleProperty("latchway.gatewayUrl").orElse("").get()
         manifestPlaceholders["latchwayApplicationId"] = providers.gradleProperty("latchway.applicationId").orElse("").get()
         manifestPlaceholders["latchwayEnvironment"] = providers.gradleProperty("latchway.environment").orElse("").get()

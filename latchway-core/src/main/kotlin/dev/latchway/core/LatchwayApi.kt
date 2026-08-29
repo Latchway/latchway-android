@@ -5,7 +5,7 @@ import java.io.IOException
 import java.net.URI
 import java.util.Locale
 
-public const val LATCHWAY_SDK_VERSION: String = "0.1.0"
+public const val LATCHWAY_SDK_VERSION: String = "1.0.0"
 public const val LATCHWAY_CONTRACT_VERSION: String = "0.4.0"
 public const val LATCHWAY_PROTOCOL_VERSION: Int = 1
 

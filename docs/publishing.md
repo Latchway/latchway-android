@@ -32,7 +32,7 @@ Run the complete gate with:
 ./scripts/verify-local-publication.sh
 ```
 
-The gate uses `0.1.0` unless `LATCHWAY_PUBLICATION_TEST_VERSION` is set. The
+The gate uses `1.0.0` unless `LATCHWAY_PUBLICATION_TEST_VERSION` is set. The
 requested version must match `LATCHWAY_SDK_VERSION`, so a Maven release cannot
 silently report a different runtime SDK version.
 

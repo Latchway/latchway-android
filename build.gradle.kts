@@ -70,7 +70,7 @@ val publishedModules = listOf(
 
 val releaseVersion = providers.gradleProperty("latchway.version")
     .orElse(providers.environmentVariable("LATCHWAY_VERSION"))
-    .orElse("0.1.0-SNAPSHOT")
+    .orElse("1.0.0-SNAPSHOT")
     .get()
 val semanticVersion = Regex("^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$")
 if (!semanticVersion.matches(releaseVersion)) {

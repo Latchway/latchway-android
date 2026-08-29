@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_directory=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repository_root=$(cd "$script_directory/.." && pwd)
-version=${LATCHWAY_PUBLICATION_TEST_VERSION:-0.1.0}
+version=${LATCHWAY_PUBLICATION_TEST_VERSION:-1.0.0}
 test_repository="$repository_root/build/publication-test-repository"
 
 if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then

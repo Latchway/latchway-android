@@ -5,9 +5,9 @@ self-hosted gateway without embedding an upstream provider key. This repository
 provides the Kotlin transport and platform-security integration for that
 client boundary.
 
-> **Project status:** Unreleased `0.1.0-SNAPSHOT`. The module graph and security
-> implementation are available for review and conformance, but no supported
-> Maven release has been published.
+> **Project status:** `1.0.0` is the intended stable source candidate. The
+> module graph and security implementation are available for review and
+> conformance, but no supported Maven release has yet been published.
 
 ## Modules
 
@@ -35,7 +35,7 @@ BOM and add only the adapters the application uses:
 
 ```kotlin
 dependencies {
-    implementation(platform("dev.latchway:latchway-bom:0.1.0"))
+    implementation(platform("dev.latchway:latchway-bom:1.0.0"))
     implementation("dev.latchway:latchway-okhttp")
     implementation("dev.latchway:latchway-play-integrity")
     implementation("dev.latchway:latchway-firebase-auth") // optional
