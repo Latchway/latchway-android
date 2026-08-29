@@ -6,7 +6,7 @@ import java.net.URI
 import java.util.Locale
 
 public const val LATCHWAY_SDK_VERSION: String = "1.0.0"
-public const val LATCHWAY_CONTRACT_VERSION: String = "0.4.0"
+public const val LATCHWAY_CONTRACT_VERSION: String = "0.5.1"
 public const val LATCHWAY_PROTOCOL_VERSION: Int = 1
 
 internal val ATTESTATION_PROVIDERS: Set<String> = setOf(

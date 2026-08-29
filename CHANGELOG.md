@@ -11,9 +11,9 @@ Versioning once package publication begins.
 
 ### Changed
 
-- Synchronized the SDK with core contract `0.4.0` while retaining wire
-  protocol `1`; compatibility is declared for server `0.4.0` through the
-  tested `0.4.x` series. The server-owned trusted input-accounting contract
+- Synchronized the SDK with released core contract checkpoint `0.5.1` while
+  retaining wire protocol `1`; compatibility is declared for server `1.0.0`
+  through the tested `1.0.x` series. The server-owned trusted input-accounting contract
   adds no client wire fields, and indeterminate-operation errors preserve their
   required operation ID.
 - Server-confirmed installation revocation is terminal for that client,

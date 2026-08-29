@@ -1,20 +1,21 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "manifest_version": 1,
-  "contract_version": "0.4.0",
-  "contract_status": "draft",
+  "contract_version": "0.5.1",
+  "contract_status": "released",
   "wire_protocol": {
     "current": 1,
     "supported": [1],
     "minimum": 1
   },
   "bundle": {
-    "file_name": "latchway-contract-0.4.0.tar.gz",
+    "file_name": "latchway-contract-0.5.1.tar.gz",
     "required_entries": [
       "client.openapi.yaml",
       "admin.openapi.yaml",
       "config.schema.json",
       "attestation-binding.schema.json",
+      "release-evidence.schema.json",
       "error-codes.yaml",
       "protocol-version.json",
       "test-vectors",
@@ -33,6 +34,30 @@
     "canonicalization": "RFC 8785 JCS",
     "hash": "SHA-256"
   },
+  "release_evidence": {
+    "schema_file": "release-evidence.schema.json",
+    "schema_version": 1,
+    "maximum_age_seconds": 604800,
+    "maximum_window_seconds": 604800,
+    "promotion_domains": [
+      "live_sdk_conformance",
+      "physical_devices",
+      "live_provider",
+      "cloud_deployments",
+      "operational_resilience",
+      "supply_chain"
+    ],
+    "release_domains": [
+      "live_sdk_conformance",
+      "public_tags",
+      "public_registries",
+      "physical_devices",
+      "live_provider",
+      "cloud_deployments",
+      "operational_resilience",
+      "supply_chain"
+    ]
+  },
   "standard_headers": {
     "feature": "X-Latchway-Feature",
     "sdk": "X-Latchway-SDK",
@@ -41,5 +66,5 @@
     "request_id": "X-Latchway-Request-ID"
   },
   "sdk_kinds": ["ios", "android", "javascript", "react-native"],
-  "released_at": null
+  "released_at": "2026-08-29T07:14:27Z"
 }

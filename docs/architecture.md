@@ -3,7 +3,7 @@
 ## Status
 
 This document describes the intended `1.0.0` source candidate locked
-to contract `0.4.0` and wire protocol `1`. Public APIs remain handwritten; the
+to contract `0.5.1` and wire protocol `1`. Public APIs remain handwritten; the
 internal JSON boundary is validated directly against the core schemas and
 shared fixtures.
 

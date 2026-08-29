@@ -3,7 +3,6 @@ package dev.latchway.core
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.charset.StandardCharsets
 
@@ -16,7 +15,7 @@ class ContractManifestTest {
     fun authoritativeManifestMatchesRuntimeContractAndWireConstants() {
         assertEquals(1, manifest.getInt("manifest_version"))
         assertEquals(LATCHWAY_CONTRACT_VERSION, manifest.getString("contract_version"))
-        assertEquals("draft", manifest.getString("contract_status"))
+        assertEquals("released", manifest.getString("contract_status"))
 
         val wire = manifest.getJSONObject("wire_protocol")
         assertEquals(LATCHWAY_PROTOCOL_VERSION, wire.getInt("current"))
@@ -31,6 +30,7 @@ class ContractManifestTest {
                 "admin.openapi.yaml",
                 "config.schema.json",
                 "attestation-binding.schema.json",
+                "release-evidence.schema.json",
                 "error-codes.yaml",
                 "protocol-version.json",
                 "test-vectors",
@@ -56,7 +56,36 @@ class ContractManifestTest {
             listOf("ios", "android", "javascript", "react-native"),
             manifest.getJSONArray("sdk_kinds").strings(),
         )
-        assertTrue(manifest.isNull("released_at"))
+        val releaseEvidence = manifest.getJSONObject("release_evidence")
+        assertEquals("release-evidence.schema.json", releaseEvidence.getString("schema_file"))
+        assertEquals(1, releaseEvidence.getInt("schema_version"))
+        assertEquals(604800, releaseEvidence.getInt("maximum_age_seconds"))
+        assertEquals(604800, releaseEvidence.getInt("maximum_window_seconds"))
+        assertEquals(
+            listOf(
+                "live_sdk_conformance",
+                "physical_devices",
+                "live_provider",
+                "cloud_deployments",
+                "operational_resilience",
+                "supply_chain",
+            ),
+            releaseEvidence.getJSONArray("promotion_domains").strings(),
+        )
+        assertEquals(
+            listOf(
+                "live_sdk_conformance",
+                "public_tags",
+                "public_registries",
+                "physical_devices",
+                "live_provider",
+                "cloud_deployments",
+                "operational_resilience",
+                "supply_chain",
+            ),
+            releaseEvidence.getJSONArray("release_domains").strings(),
+        )
+        assertEquals("2026-08-29T07:14:27Z", manifest.getString("released_at"))
     }
 
     @Test
