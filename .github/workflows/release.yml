@@ -75,6 +75,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          python3 scripts/require-gh-version.py
           gh attestation verify "$RUNNER_TEMP/latchway-cross-repository-promotion.json" \
             --repo Latchway/latchway \
             --signer-workflow Latchway/latchway/.github/workflows/cross-repository-conformance.yml \
@@ -178,6 +179,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"
+          python3 scripts/require-gh-version.py
           gh release verify --help >/dev/null
           gh release verify-asset --help >/dev/null
           enabled=$(gh api \
