@@ -205,6 +205,13 @@ class DeviceEvidenceTest(unittest.TestCase):
         result = device_evidence.build_evidence(current, profile(), self.schema)
         self.assertFalse(result["release_eligible"])
 
+    def test_android_emulator_release_build_fails_closed(self) -> None:
+        current = observation()
+        current["device"]["physical"] = False
+        current["device"]["emulator"] = True
+        result = device_evidence.build_evidence(current, profile(), self.schema)
+        self.assertFalse(result["release_eligible"])
+
     def test_testing_attestation_fails_closed(self) -> None:
         current = observation()
         current["device"]["testing"] = True
