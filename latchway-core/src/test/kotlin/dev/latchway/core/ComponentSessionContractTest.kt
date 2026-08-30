@@ -64,6 +64,67 @@ class ComponentSessionContractTest {
     }
 
     @Test
+    fun compositeDirectAttestedTrustRoundTripsButCannotAppearInProvisioning() {
+        val snapshot = ComponentSessionSnapshot(
+            accessToken = SecretValue.of("a".repeat(64)),
+            refreshToken = SecretValue.of("r".repeat(32)),
+            accessExpiresAtEpochSeconds = 1_700_000_600,
+            refreshExpiresAtEpochSeconds = 1_700_003_600,
+            installation = InstallationSummary(
+                id = "ins_01J00000000000000000000001",
+                platform = "android",
+                dpopJkt = jwk.thumbprint(),
+                status = "active",
+            ),
+            installationFamily = InstallationFamilySummary(
+                "fam_01J00000000000000000000001",
+                "active",
+            ),
+            component = ClientComponentSummary(
+                id = "cmp_01J00000000000000000000001",
+                definitionId = "android-wear",
+                kind = "wear_app",
+                platform = "android",
+                isRoot = false,
+                status = "active",
+                dpopJkt = jwk.thumbprint(),
+                grantedFeatures = setOf("assistant"),
+            ),
+            trust = ComponentTrustSummary(
+                provider = "app_attest",
+                level = "app_verified",
+                source = "delegated_direct_attested",
+                parentComponentId = "cmp_01J00000000000000000000000",
+                parentAttestationProvider = "app_attest",
+                delegationId = "dlg_01J00000000000000000000001",
+                verifiedAt = "2023-11-14T22:13:20Z",
+                expiresAt = "2023-11-14T23:13:20Z",
+            ),
+        )
+
+        val restored = decodeComponentSnapshot(encodeComponentSnapshot(snapshot))
+
+        assertEquals("delegated_direct_attested", restored.trust.source)
+        assertEquals(snapshot.trust, restored.trust)
+
+        val invalidProvisioning = componentProvisioning(
+            features = "[\"assistant\"]",
+            refreshExpiry = "2023-11-14T23:13:20Z",
+            source = "delegated_direct_attested",
+        )
+        val error = assertThrows(LatchwayException::class.java) {
+            parseComponentProvisioning(
+                encoded = invalidProvisioning,
+                definitionId = "android-wear",
+                publicJwk = jwk,
+                requestedFeatures = setOf("assistant"),
+                nowEpochSeconds = 1_700_000_000,
+            )
+        }
+        assertEquals(LatchwayErrorCode.RESPONSE_INVALID, error.code)
+    }
+
+    @Test
     fun provisioningResponseCannotExpandFeatureScopeOrDivergeFromTrustExpiry() {
         val expanded = componentProvisioning(
             features = "[\"assistant\",\"admin\"]",
@@ -176,12 +237,16 @@ class ComponentSessionContractTest {
         }
     }
 
-    private fun componentProvisioning(features: String, refreshExpiry: String): String = """
+    private fun componentProvisioning(
+        features: String,
+        refreshExpiry: String,
+        source: String = "delegated_from_attested_root",
+    ): String = """
         {
           "component_id":"cmp_01J00000000000000000000001",
           "installation_family_id":"fam_01J00000000000000000000001",
           "trust":{
-            "source":"delegated_from_attested_root",
+            "source":"$source",
             "expires_at":"2023-11-14T23:13:20Z"
           },
           "granted_features":$features,

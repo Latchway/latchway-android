@@ -15,6 +15,7 @@
       "admin.openapi.yaml",
       "config.schema.json",
       "attestation-binding.schema.json",
+      "component-attestation-binding.schema.json",
       "release-evidence.schema.json",
       "error-codes.yaml",
       "protocol-version.json",
@@ -32,6 +33,12 @@
   },
   "attestation_binding": {
     "version": 1,
+    "canonicalization": "RFC 8785 JCS",
+    "hash": "SHA-256"
+  },
+  "component_attestation_binding": {
+    "version": 2,
+    "purpose": "component_attestation_step_up",
     "canonicalization": "RFC 8785 JCS",
     "hash": "SHA-256"
   },

@@ -62,7 +62,7 @@ public data class ComponentTrustSummary(
     init {
         require(provider in ATTESTATION_PROVIDERS) { "Component trust provider is invalid" }
         require(level in COMPONENT_TRUST_LEVELS) { "Component trust level is invalid" }
-        require(source in DELEGATED_TRUST_SOURCES) { "Component trust source is invalid" }
+        require(source in COMPONENT_SESSION_TRUST_SOURCES) { "Component trust source is invalid" }
         require(COMPONENT_ID.matches(parentComponentId)) { "Parent component ID is not canonical" }
         require(parentAttestationProvider == null || parentAttestationProvider in ATTESTATION_PROVIDERS) {
             "Parent attestation provider is invalid"
@@ -290,7 +290,7 @@ internal data class ComponentProvisioningTrust(
     val expiresAt: String,
 ) {
     init {
-        require(source in DELEGATED_TRUST_SOURCES)
+        require(source in PROVISIONING_TRUST_SOURCES)
         parseRfc3339EpochSeconds(expiresAt)
     }
 }
@@ -952,7 +952,11 @@ private val FAMILY_ID = Regex("^fam_[A-Za-z0-9_-]{16,128}$")
 private val COMPONENT_ID = Regex("^cmp_[A-Za-z0-9_-]{16,128}$")
 private val INSTALLATION_ID = Regex("^ins_[A-Za-z0-9_-]{16,128}$")
 private val DELEGATION_ID = Regex("^dlg_[A-Za-z0-9_-]{16,128}$")
-private val DELEGATED_TRUST_SOURCES = setOf("delegated_from_attested_root", "delegated_identity_only")
+private val PROVISIONING_TRUST_SOURCES = setOf(
+    "delegated_from_attested_root",
+    "delegated_identity_only",
+)
+private val COMPONENT_SESSION_TRUST_SOURCES = PROVISIONING_TRUST_SOURCES + "delegated_direct_attested"
 private val COMPONENT_TRUST_LEVELS = setOf(
     "none", "identity_only", "web_risk_verified", "app_verified", "device_verified",
     "strong_device_verified", "debug",

@@ -8,11 +8,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.net.URI
 import java.nio.charset.StandardCharsets
+import java.time.Instant
 
 class ContractManifestTest {
     private val manifest: JSONObject by lazy { resource("contract/protocol-version.json") }
     private val dpopVectors: JSONObject by lazy { resource("contract/dpop-v1.json") }
     private val attestationVectors: JSONObject by lazy { resource("contract/attestation-binding-v1.json") }
+    private val componentAttestationVectors: JSONObject by lazy {
+        resource("contract/component-attestation-binding-v2.json")
+    }
     private val installationFamilyVectors: JSONObject by lazy {
         resource("contract/installation-family-v2.json")
     }
@@ -36,6 +40,7 @@ class ContractManifestTest {
                 "admin.openapi.yaml",
                 "config.schema.json",
                 "attestation-binding.schema.json",
+                "component-attestation-binding.schema.json",
                 "release-evidence.schema.json",
                 "error-codes.yaml",
                 "protocol-version.json",
@@ -104,6 +109,10 @@ class ContractManifestTest {
         assertTrue(manifest.getJSONObject("wire_protocol").getJSONArray("supported").integers()
             .contains(dpopVectors.getInt("wire_protocol_version")))
         assertEquals(LATCHWAY_CONTRACT_VERSION, attestationVectors.getString("contract_version"))
+        assertEquals(
+            LATCHWAY_CONTRACT_VERSION,
+            componentAttestationVectors.getString("contract_version"),
+        )
         assertEquals(LATCHWAY_CONTRACT_VERSION, installationFamilyVectors.getString("contract_version"))
         assertEquals(LATCHWAY_PROTOCOL_VERSION, installationFamilyVectors.getInt("wire_protocol_version"))
 
@@ -111,6 +120,15 @@ class ContractManifestTest {
         assertEquals(binding.getInt("version"), attestationVectors.getInt("binding_version"))
         assertEquals(binding.getString("canonicalization"), attestationVectors.getString("canonicalization"))
         assertEquals(binding.getString("hash"), attestationVectors.getString("hash"))
+
+        val componentBinding = manifest.getJSONObject("component_attestation_binding")
+        assertEquals(componentBinding.getInt("version"), componentAttestationVectors.getInt("binding_version"))
+        assertEquals("component_attestation_step_up", componentBinding.getString("purpose"))
+        assertEquals(
+            componentBinding.getString("canonicalization"),
+            componentAttestationVectors.getString("canonicalization"),
+        )
+        assertEquals(componentBinding.getString("hash"), componentAttestationVectors.getString("hash"))
     }
 
     @Test
@@ -242,6 +260,87 @@ class ContractManifestTest {
             assertEquals(vector.getString("utf8_hex"), canonicalBytes.hex())
             assertEquals(vector.getString("sha256_hex"), sha256(canonicalBytes).hex())
             assertEquals(vector.getString("sha256_base64url"), Base64Url.encode(sha256(canonicalBytes)))
+        }
+    }
+
+    @Test
+    fun everyComponentAttestationVectorMatchesCanonicalBytesHashAndStrictChallengeParsing() {
+        val vectors = componentAttestationVectors.getJSONArray("vectors")
+        repeat(vectors.length()) { index ->
+            val vector = vectors.getJSONObject(index)
+            val input = vector.getJSONObject("input")
+            val canonical = vector.getString("canonical_json")
+            val canonicalBytes = canonical.toByteArray(StandardCharsets.UTF_8)
+
+            assertEquals(
+                "fixture ${vector.getString("id")} canonical object",
+                input.scalarValues(),
+                JSONObject(canonical).scalarValues(),
+            )
+            assertEquals(vector.getString("utf8_hex"), canonicalBytes.hex())
+            assertEquals(vector.getString("sha256_hex"), sha256(canonicalBytes).hex())
+            assertEquals(vector.getString("sha256_base64url"), Base64Url.encode(sha256(canonicalBytes)))
+
+            val issuedAt = input.getLong("issued_at")
+            val response = JSONObject()
+                .put("challenge_id", input.getString("challenge_id"))
+                .put("challenge_nonce", input.getString("challenge_nonce"))
+                .put("binding_version", 2)
+                .put("issued_at", issuedAt)
+                .put("expires_at", Instant.ofEpochSecond(issuedAt + 300).toString())
+                .put("attestation", JSONObject()
+                    .put("provider", "app_attest")
+                    .put("mode", "required")
+                    .put("client_data_hash", vector.getString("sha256_base64url"))
+                    .put("provider_options", JSONObject().put("environment", "production")))
+            val challenge = parseComponentAttestationChallenge(
+                encoded = response.toString(),
+                nowEpochSeconds = issuedAt,
+                maximumClockSkewSeconds = 300,
+            )
+
+            assertEquals(input.getString("challenge_id"), challenge.challengeId)
+            assertEquals("app_attest", challenge.provider)
+            assertEquals(AttestationMode.REQUIRED, challenge.mode)
+            assertEquals(vector.getString("sha256_base64url"), challenge.clientDataHash)
+            assertEquals(issuedAt, challenge.issuedAtEpochSeconds)
+            assertEquals(issuedAt + 300, challenge.expiresAtEpochSeconds)
+        }
+    }
+
+    @Test
+    fun componentAttestationChallengeParserRejectsNonV2AndNonAppAttestDocuments() {
+        val vector = componentAttestationVectors.getJSONArray("vectors").getJSONObject(0)
+        val input = vector.getJSONObject("input")
+        val issuedAt = input.getLong("issued_at")
+        val valid = JSONObject()
+            .put("challenge_id", input.getString("challenge_id"))
+            .put("challenge_nonce", input.getString("challenge_nonce"))
+            .put("binding_version", 2)
+            .put("issued_at", issuedAt)
+            .put("expires_at", Instant.ofEpochSecond(issuedAt + 300).toString())
+            .put("attestation", JSONObject()
+                .put("provider", "app_attest")
+                .put("mode", "required")
+                .put("client_data_hash", vector.getString("sha256_base64url")))
+
+        val invalidDocuments = listOf(
+            JSONObject(valid.toString()).put("binding_version", 1),
+            JSONObject(valid.toString()).put("challenge_nonce", "A".repeat(42)),
+            JSONObject(valid.toString()).apply {
+                getJSONObject("attestation").put("provider", "play_integrity")
+            },
+            JSONObject(valid.toString()).put("unexpected", true),
+        )
+        invalidDocuments.forEach { document ->
+            val error = org.junit.Assert.assertThrows(LatchwayException::class.java) {
+                parseComponentAttestationChallenge(
+                    encoded = document.toString(),
+                    nowEpochSeconds = issuedAt,
+                    maximumClockSkewSeconds = 300,
+                )
+            }
+            assertEquals(LatchwayErrorCode.RESPONSE_INVALID, error.code)
         }
     }
 

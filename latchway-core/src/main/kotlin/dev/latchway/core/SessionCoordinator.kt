@@ -838,6 +838,58 @@ private fun parseChallenge(
     throw responseInvalid("The server returned an invalid attestation challenge", error)
 }
 
+/**
+ * Parses the App Attest-only component binding-v2 challenge without exposing a
+ * direct component step-up operation from the Android SDK.
+ */
+internal fun parseComponentAttestationChallenge(
+    encoded: String,
+    nowEpochSeconds: Long,
+    maximumClockSkewSeconds: Long,
+): AttestationChallenge = try {
+    val json = JSONObject(encoded)
+    val expectedKeys = setOf(
+        "challenge_id", "challenge_nonce", "binding_version", "issued_at", "expires_at", "attestation",
+    )
+    require(json.length() == expectedKeys.size && json.keys().asSequence().toSet() == expectedKeys)
+    require(json.getInt("binding_version") == 2)
+    val issuedAt = json.getLong("issued_at").also {
+        require(it in 0..253_402_300_799 && it <= nowEpochSeconds + maximumClockSkewSeconds)
+    }
+    val challengeNonce = boundedString(json, "challenge_nonce", 43, 86)
+    require(Base64Url.decode(challengeNonce).size in 32..64)
+    val expiresAt = parseRfc3339EpochSeconds(boundedString(json, "expires_at", 20, 64))
+    require(expiresAt > issuedAt)
+    if (expiresAt + maximumClockSkewSeconds <= nowEpochSeconds) {
+        throw LatchwayException(
+            code = LatchwayErrorCode.ATTESTATION_STALE,
+            safeMessage = "The server returned an expired component attestation challenge",
+        )
+    }
+    val attestation = json.getJSONObject("attestation")
+    val actualAttestationKeys = attestation.keys().asSequence().toSet()
+    val requiredAttestationKeys = setOf("provider", "mode", "client_data_hash")
+    require(actualAttestationKeys.containsAll(requiredAttestationKeys))
+    require(actualAttestationKeys.all { it in requiredAttestationKeys || it == "provider_options" })
+    require(attestation.getString("provider") == "app_attest")
+    require(attestation.getString("mode") == "required")
+    if (attestation.has("provider_options")) {
+        require(!attestation.isNull("provider_options") && attestation.get("provider_options") is JSONObject)
+    }
+    AttestationChallenge(
+        challengeId = boundedString(json, "challenge_id", 20, 132),
+        provider = "app_attest",
+        mode = AttestationMode.REQUIRED,
+        clientDataHash = boundedString(attestation, "client_data_hash", 43, 43),
+        providerOptions = attestation.optJSONObject("provider_options")?.toSafeMap() ?: emptyMap(),
+        issuedAtEpochSeconds = issuedAt,
+        expiresAtEpochSeconds = expiresAt,
+    )
+} catch (error: Exception) {
+    if (error is LatchwayException) throw error
+    throw responseInvalid("The server returned an invalid component attestation challenge", error)
+}
+
 private fun parseQuota(encoded: String): LatchwayQuotaSnapshot = try {
     val json = JSONObject(encoded)
     val limitsJson = json.getJSONArray("limits")
