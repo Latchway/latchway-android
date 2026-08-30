@@ -40,6 +40,21 @@ public class PlayIntegrityAttestationProvider private constructor(
     private val retryPolicy: PlayIntegrityRetryPolicy,
     private val sleeper: suspend (Long) -> Unit,
 ) : AttestationProvider {
+    private val warmUpMutex = Mutex()
+    private var prepared = false
+    private var providerGeneration = 0L
+
+    private enum class ProviderInvalidDisposition {
+        STALE_OBSERVATION,
+        RENEWED,
+        EXHAUSTED,
+    }
+
+    private data class ProviderInvalidResolution(
+        val disposition: ProviderInvalidDisposition,
+        val generation: Long,
+    )
+
     public constructor(
         context: Context,
         cloudProjectNumber: Long,
@@ -55,9 +70,7 @@ public class PlayIntegrityAttestationProvider private constructor(
         require(cloudProjectNumber > 0) { "cloudProjectNumber must be positive" }
     }
 
-    override suspend fun warmUp() {
-        runWithRetry(allowProviderRenewal = false) { gateway.prepare() }
-    }
+    override suspend fun warmUp(): Unit = warmUpMutex.withLock { prepareLocked() }
 
     override suspend fun attest(challenge: AttestationChallenge): AttestationEvidence {
         if (challenge.provider != PROVIDER) {
@@ -76,9 +89,7 @@ public class PlayIntegrityAttestationProvider private constructor(
         }
         requireMatchingCloudProjectNumber(challenge.providerOptions)
         warmUp()
-        val token = runWithRetry(allowProviderRenewal = true) {
-            gateway.request(challenge.clientDataHash)
-        }
+        val token = requestToken(challenge.clientDataHash)
         if (token.length !in 16..262_144) {
             throw LatchwayException(
                 code = LatchwayErrorCode.ATTESTATION_INVALID,
@@ -108,7 +119,7 @@ public class PlayIntegrityAttestationProvider private constructor(
     }
 
     private suspend fun <T> runWithRetry(
-        allowProviderRenewal: Boolean,
+        propagateInvalidProvider: Boolean = false,
         action: suspend () -> T,
     ): T {
         var delayMillis = retryPolicy.initialDelayMillis
@@ -116,12 +127,10 @@ public class PlayIntegrityAttestationProvider private constructor(
             try {
                 return action()
             } catch (failure: IntegrityGatewayException) {
-                if (allowProviderRenewal &&
+                if (propagateInvalidProvider &&
                     failure.errorCode == StandardIntegrityErrorCode.INTEGRITY_TOKEN_PROVIDER_INVALID
                 ) {
-                    gateway.invalidate()
-                    runWithRetry(allowProviderRenewal = false) { gateway.prepare() }
-                    return runWithRetry(allowProviderRenewal = false, action = action)
+                    throw failure
                 } else if (failure.errorCode.isDocumentedTransient() &&
                     attempt + 1 < retryPolicy.maximumAttempts
                 ) {
@@ -145,6 +154,77 @@ public class PlayIntegrityAttestationProvider private constructor(
         throw LatchwayException(
             code = LatchwayErrorCode.ATTESTATION_INVALID,
             safeMessage = "Play Integrity retry policy was exhausted",
+        )
+    }
+
+    private suspend fun requestToken(requestHash: String): String {
+        var observedGeneration = warmUpMutex.withLock { providerGeneration }
+        // A stale observation does not spend this request's one real provider renewal. Both
+        // the stale-generation transitions and the actual renewal are independently bounded.
+        var providerRenewalAvailable = true
+        var staleRetriesRemaining = retryPolicy.maximumAttempts
+        while (true) {
+            try {
+                return runWithRetry(propagateInvalidProvider = true) {
+                    gateway.request(requestHash)
+                }
+            } catch (failure: IntegrityGatewayException) {
+                if (failure.errorCode != StandardIntegrityErrorCode.INTEGRITY_TOKEN_PROVIDER_INVALID) {
+                    throw failure.toLatchwayException()
+                }
+                val resolution = resolveInvalidProvider(
+                    observedGeneration = observedGeneration,
+                    allowRenewal = providerRenewalAvailable,
+                )
+                when (resolution.disposition) {
+                    ProviderInvalidDisposition.STALE_OBSERVATION -> {
+                        if (staleRetriesRemaining == 0) throw failure.toLatchwayException()
+                        staleRetriesRemaining--
+                    }
+                    ProviderInvalidDisposition.RENEWED -> providerRenewalAvailable = false
+                    ProviderInvalidDisposition.EXHAUSTED -> throw failure.toLatchwayException()
+                }
+                observedGeneration = resolution.generation
+            }
+        }
+    }
+
+    private suspend fun prepareLocked() {
+        if (prepared) return
+        runWithRetry { gateway.prepare() }
+        prepared = true
+        providerGeneration++
+    }
+
+    private suspend fun resolveInvalidProvider(
+        observedGeneration: Long,
+        allowRenewal: Boolean,
+    ): ProviderInvalidResolution = warmUpMutex.withLock {
+        if (!prepared) {
+            prepareLocked()
+            return@withLock ProviderInvalidResolution(
+                ProviderInvalidDisposition.STALE_OBSERVATION,
+                providerGeneration,
+            )
+        }
+        if (providerGeneration != observedGeneration) {
+            return@withLock ProviderInvalidResolution(
+                ProviderInvalidDisposition.STALE_OBSERVATION,
+                providerGeneration,
+            )
+        }
+        if (!allowRenewal) {
+            return@withLock ProviderInvalidResolution(
+                ProviderInvalidDisposition.EXHAUSTED,
+                providerGeneration,
+            )
+        }
+        gateway.invalidate()
+        prepared = false
+        prepareLocked()
+        ProviderInvalidResolution(
+            ProviderInvalidDisposition.RENEWED,
+            providerGeneration,
         )
     }
 

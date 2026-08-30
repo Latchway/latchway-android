@@ -62,18 +62,26 @@ jobs:
           CORE_TAG: ${{ github.event.client_payload.core_tag }}
           REPORT_URL: ${{ github.event.client_payload.promotion_evidence_url }}
           REPORT_SHA256: ${{ github.event.client_payload.promotion_evidence_sha256 }}
+          CORE_READ_TOKEN: ${{ secrets.LATCHWAY_SIBLING_REPOSITORIES_READ_TOKEN || github.token }}
         run: |
           set -euo pipefail
           report="$RUNNER_TEMP/latchway-cross-repository-promotion.json"
+          auth_config="$RUNNER_TEMP/latchway-core-release-auth"
+          trap 'rm -f -- "$auth_config"' EXIT
           test "$REPORT_URL" = "https://github.com/Latchway/latchway/releases/download/$CORE_TAG/latchway-cross-repository-promotion.json"
+          umask 077
+          printf 'header = "Authorization: Bearer %s"\n' "$CORE_READ_TOKEN" > "$auth_config"
           curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --config "$auth_config" \
             --connect-timeout 15 --max-time 120 --max-filesize 2097152 \
             --fail --location --silent --show-error --output "$report" "$REPORT_URL"
+          rm -f -- "$auth_config"
+          trap - EXIT
           printf '%s  %s\n' "$REPORT_SHA256" "$report" | sha256sum --check --strict
       - name: Verify the core workflow artifact attestation
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.LATCHWAY_SIBLING_REPOSITORIES_READ_TOKEN || github.token }}
         run: |
           python3 scripts/require-gh-version.py
           gh attestation verify "$RUNNER_TEMP/latchway-cross-repository-promotion.json" \
@@ -109,17 +117,37 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          GIT_TAG_READ_TOKEN: ${{ github.token }}
           RELEASE_COMMIT: ${{ steps.promotion.outputs.release_commit }}
           RELEASE_TAG: ${{ steps.promotion.outputs.release_tag }}
           CORE_TAG: ${{ steps.promotion.outputs.core_tag }}
           REPORT_SHA256: ${{ steps.promotion.outputs.report_sha256 }}
         run: |
           set -euo pipefail
+          git_askpass="$RUNNER_TEMP/latchway-git-askpass"
+          umask 077
+          cat > "$git_askpass" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          case "${1:-}" in
+            *github.com*Username*|*Username*github.com*) printf '%s\n' x-access-token ;;
+            *github.com*Password*|*Password*github.com*)
+              test -n "${GIT_TAG_READ_TOKEN:-}"
+              printf '%s\n' "$GIT_TAG_READ_TOKEN"
+              ;;
+            *) exit 1 ;;
+          esac
+          EOF
+          chmod 700 "$git_askpass"
+          trap 'rm -f -- "$git_askpass"' EXIT
+          git_with_auth() {
+            GIT_ASKPASS="$git_askpass" GIT_TERMINAL_PROMPT=0 git -c credential.helper= "$@"
+          }
           message="Android SDK $RELEASE_TAG
 
           Core promotion: $CORE_TAG
           Promotion evidence SHA-256: $REPORT_SHA256"
-          remote=$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG")
+          remote=$(git_with_auth ls-remote --tags origin "refs/tags/$RELEASE_TAG")
           if [[ -n "$remote" ]]; then
             tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha)
             test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object" --jq .object.type)" = commit
@@ -136,7 +164,10 @@ jobs:
               '{ref: $ref, sha: $sha}' > "$RUNNER_TEMP/sdk-tag-ref.json"
             gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" --input "$RUNNER_TEMP/sdk-tag-ref.json" >/dev/null
           fi
-          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          git_with_auth fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          rm -f -- "$git_askpass"
+          trap - EXIT
+          unset GIT_TAG_READ_TOKEN
           test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
           test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$RELEASE_COMMIT"
 
@@ -165,11 +196,35 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Fetch and validate the promoted annotated tag
+        env:
+          GIT_TAG_READ_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          git_askpass="$RUNNER_TEMP/latchway-git-askpass"
+          umask 077
+          cat > "$git_askpass" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          case "${1:-}" in
+            *github.com*Username*|*Username*github.com*) printf '%s\n' x-access-token ;;
+            *github.com*Password*|*Password*github.com*)
+              test -n "${GIT_TAG_READ_TOKEN:-}"
+              printf '%s\n' "$GIT_TAG_READ_TOKEN"
+              ;;
+            *) exit 1 ;;
+          esac
+          EOF
+          chmod 700 "$git_askpass"
+          trap 'rm -f -- "$git_askpass"' EXIT
+          git_with_auth() {
+            GIT_ASKPASS="$git_askpass" GIT_TERMINAL_PROMPT=0 git -c credential.helper= "$@"
+          }
           printf 'Android SDK %s\n\nCore promotion: %s\nPromotion evidence SHA-256: %s' \
             "$RELEASE_TAG" "$CORE_TAG" "$REPORT_SHA256" > "$RUNNER_TEMP/sdk-tag-message.txt"
-          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          git_with_auth fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          rm -f -- "$git_askpass"
+          trap - EXIT
+          unset GIT_TAG_READ_TOKEN
           test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
           test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$RELEASE_COMMIT"
           scripts/release-preflight.sh "$RELEASE_TAG"
@@ -194,8 +249,11 @@ jobs:
           java-version: "17"
       - name: Configure the Android SDK
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        with:
+          cmdline-tools-version: "14742923" # 20.0
+          packages: ""
       - name: Install the pinned Android platform and build tools
-        run: sdkmanager "platforms;android-37" "build-tools;36.0.0"
+        run: scripts/install-android-sdk.sh
       - name: Run the complete Android SDK gate
         run: |
           export LATCHWAY_VERSION="${RELEASE_TAG#v}"

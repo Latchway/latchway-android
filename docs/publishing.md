@@ -195,6 +195,12 @@ The workflow creates GitHub build-provenance attestations for the deterministic
 repository, reviewed public key, upload intent, deployment record/status, and
 `maven-central-release-evidence.json`.
 
+If the core repository is private, configure the repository secret
+`LATCHWAY_SIBLING_REPOSITORIES_READ_TOKEN` as a fine-grained Contents: read
+credential scoped to `Latchway/latchway`. It authenticates only the exact core
+promotion asset download and attestation verification. Public core repositories
+need no secret and fall back to the job token.
+
 For a release-candidate rehearsal before a tag exists, an authorized release
 operator may set `LATCHWAY_ALLOW_UNTAGGED_RELEASE_FOR_STAGING=true`. The clean
 worktree, version, signature, and user-managed Portal validation gates still

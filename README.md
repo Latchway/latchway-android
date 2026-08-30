@@ -154,8 +154,8 @@ Review [Security Policy](SECURITY.md) before reporting a vulnerability.
 
 ## Build and tests
 
-Install Android SDK Platform 37.0 and SDK Build Tools 36, accept Google's SDK
-license locally, then run:
+Install the stable packages `platforms;android-37.0` and
+`build-tools;36.0.0`, accept Google's SDK license locally, then run:
 
 ```shell
 ./gradlew test assemble lint
