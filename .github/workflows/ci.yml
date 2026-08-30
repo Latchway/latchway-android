@@ -43,8 +43,10 @@ jobs:
         run: |
           python3 scripts/test-device-evidence.py
           python3 scripts/test-physical-evidence-workflow.py
+          python3 scripts/test-play-conformance-candidate.py
           python3 scripts/test-verify-gateway-deployment.py
-          bash -n scripts/gateway-deployment-evidence.sh scripts/run-physical-play-integrity.sh
+          bash -n scripts/gateway-deployment-evidence.sh scripts/run-physical-play-integrity.sh \
+            scripts/stage-play-conformance-candidate.sh
       - name: Test fail-closed release publication and evidence
         run: |
           python3 scripts/test_verify_gpg_status.py

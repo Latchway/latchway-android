@@ -4,6 +4,7 @@
         <meta-data android:name="dev.latchway.GATEWAY_URL" android:value="${latchwayGatewayUrl}" />
         <meta-data android:name="dev.latchway.APPLICATION_ID" android:value="${latchwayApplicationId}" />
         <meta-data android:name="dev.latchway.ENVIRONMENT" android:value="${latchwayEnvironment}" />
+        <meta-data android:name="dev.latchway.IDENTITY_PROVIDER" android:value="${latchwayIdentityProvider}" />
         <meta-data android:name="dev.latchway.FEATURE" android:value="${latchwayFeature}" />
         <meta-data android:name="dev.latchway.ERROR_MAPPING_FEATURE" android:value="${latchwayErrorMappingFeature}" />
         <meta-data android:name="dev.latchway.MODEL" android:value="${latchwayModel}" />
@@ -28,6 +29,11 @@
             android:authorities="${applicationId}.device-evidence"
             android:exported="true"
             android:readPermission="android.permission.DUMP" />
+        <provider
+            android:name=".OneTimeIdentityGrantProvider"
+            android:authorities="${applicationId}.device-bootstrap"
+            android:exported="true"
+            android:writePermission="android.permission.DUMP" />
         <activity android:name=".ConformanceActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

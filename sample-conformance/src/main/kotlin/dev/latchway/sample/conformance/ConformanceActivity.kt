@@ -6,12 +6,9 @@ import android.os.Bundle
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
-import com.google.firebase.FirebaseApp
-import com.google.firebase.auth.FirebaseAuth
 import dev.latchway.core.KeyBacking
 import dev.latchway.core.LatchwayErrorCode
 import dev.latchway.core.LatchwayException
-import dev.latchway.firebaseauth.FirebaseIdentityTokenProvider
 import dev.latchway.okhttp.LatchwayClient
 import dev.latchway.okhttp.LatchwayConfiguration
 import dev.latchway.playintegrity.PlayIntegrityAttestationProvider
@@ -67,6 +64,7 @@ public class ConformanceActivity : Activity() {
     }
 
     override fun onDestroy() {
+        OneTimeIdentityGrantSlot.clear()
         scope.cancel()
         super.onDestroy()
     }
@@ -84,19 +82,45 @@ public class ConformanceActivity : Activity() {
     }
 
     private suspend fun runConformance() {
-        val values = ConformanceValues.load(this, intent.getStringExtra(EXTRA_RUN_ID))
+        val values = ConformanceValues.load(
+            this,
+            intent.getStringExtra(EXTRA_RUN_ID),
+            intent.getStringExtra(EXTRA_WORKFLOW_RUN_ID),
+            intent.getStringExtra(EXTRA_RUN_ATTEMPT),
+            intent.getStringExtra(EXTRA_GRANT_SHA256),
+        )
         if (values == null) {
-            status.text = "FAIL: protected build pins or run identifier are missing."
-            return
-        }
-        if (FirebaseApp.getApps(this).isEmpty() || FirebaseAuth.getInstance().currentUser == null) {
-            status.text = "FAIL: this Play-installed app requires a real signed-in Firebase user."
+            OneTimeIdentityGrantSlot.clear()
+            status.text = "FAIL: protected build pins or run-bound bootstrap coordinates are missing."
             return
         }
 
         val startedAt = timestamp()
         val identity = runCatching { applicationIdentity(this, values) }.getOrElse {
+            OneTimeIdentityGrantSlot.clear()
             status.text = "FAIL: signed application identity could not be inspected."
+            return
+        }
+        if (identity.pins != values.expectedPins) {
+            OneTimeIdentityGrantSlot.clear()
+            status.text = "FAIL: the installed application does not match its protected pins."
+            return
+        }
+        val grantCoordinates = BootstrapCoordinates(
+            audience = PHYSICAL_GRANT_AUDIENCE,
+            sourceCommit = values.sourceCommit,
+            applicationId = values.applicationId,
+            packageName = packageName,
+            identityProvider = values.identityProvider,
+            runId = values.runId,
+            workflowRunId = values.workflowRunId,
+            runAttempt = values.runAttempt,
+            grantSha256 = values.deviceGrantSha256,
+        )
+        val identityTokenProvider = OneTimeIdentityGrantSlot.takeProvider(grantCoordinates)
+        if (identityTokenProvider == null) {
+            OneTimeIdentityGrantSlot.clear()
+            status.text = "FAIL: the run-bound one-use identity grant was not delivered."
             return
         }
         val tests = mutableListOf<EvidenceTest>()
@@ -106,27 +130,43 @@ public class ConformanceActivity : Activity() {
         var gatewayVersion = "unknown"
         status.text = "Running live Play Integrity, DPoP, stream, and quota checks…"
 
-        val client = LatchwayClient(
-            configuration = LatchwayConfiguration(
-                baseUrl = values.gateway,
-                applicationId = values.applicationId,
-                environment = values.environment,
-            ),
-            identityTokenProvider = FirebaseIdentityTokenProvider(),
-            attestationProvider = PlayIntegrityAttestationProvider(this, values.cloudProjectNumber),
-            context = this,
-        )
-        val rawClient = OkHttpClient.Builder()
-            .followRedirects(false)
-            .followSslRedirects(false)
-            .retryOnConnectionFailure(false)
-            .build()
+        val client = runCatching {
+            LatchwayClient(
+                configuration = LatchwayConfiguration(
+                    baseUrl = values.gateway,
+                    applicationId = values.applicationId,
+                    environment = values.environment,
+                    identityProvider = values.identityProvider,
+                ),
+                identityTokenProvider = identityTokenProvider,
+                attestationProvider = PlayIntegrityAttestationProvider(this, values.cloudProjectNumber),
+                context = this,
+            )
+        }.getOrElse {
+            identityTokenProvider.clear()
+            OneTimeIdentityGrantSlot.clear()
+            status.text = "FAIL: the protected client could not be initialized."
+            return
+        }
+        val rawClient = runCatching {
+            OkHttpClient.Builder()
+                .followRedirects(false)
+                .followSslRedirects(false)
+                .retryOnConnectionFailure(false)
+                .build()
+        }.getOrElse {
+            identityTokenProvider.clear()
+            OneTimeIdentityGrantSlot.clear()
+            client.close()
+            status.text = "FAIL: the bounded network client could not be initialized."
+            return
+        }
 
         try {
-            // Clear only Latchway's encrypted session. The Play installation,
-            // Firebase account, and hardware key remain intact, while the next
-            // authorization must execute a fresh Standard Integrity challenge
-            // for this exact candidate instead of reusing an older session.
+            // Clear only Latchway's encrypted session. The Play installation
+            // and hardware key remain intact, while the next authorization must
+            // consume this run's one-use identity grant and execute a fresh
+            // Standard Integrity challenge for this exact candidate.
             client.clearSession()
 
             val initialFacts = deviceFacts(null)
@@ -291,6 +331,8 @@ public class ConformanceActivity : Activity() {
             // metadata only. Tokens, proofs, evidence, and exception messages are
             // deliberately excluded.
         } finally {
+            identityTokenProvider.clear()
+            OneTimeIdentityGrantSlot.clear()
             client.close()
             rawClient.dispatcher.cancelAll()
             rawClient.connectionPool.evictAll()
@@ -323,14 +365,15 @@ public class ConformanceActivity : Activity() {
             }
     }
 
-    private fun readinessMessage(): String = when {
-        FirebaseApp.getApps(this).isEmpty() -> "Firebase application configuration is required."
-        else -> "Install the exact Release build from Google Play, sign in, and run conformance."
-    }
+    private fun readinessMessage(): String =
+        "Install the exact Release build from Google Play and use the protected physical runner."
 
     private companion object {
         const val EXTRA_AUTORUN = "dev.latchway.AUTORUN"
         const val EXTRA_RUN_ID = "dev.latchway.RUN_ID"
+        const val EXTRA_WORKFLOW_RUN_ID = "dev.latchway.WORKFLOW_RUN_ID"
+        const val EXTRA_RUN_ATTEMPT = "dev.latchway.RUN_ATTEMPT"
+        const val EXTRA_GRANT_SHA256 = "dev.latchway.IDENTITY_GRANT_SHA256"
         const val MAX_CONTROL_BYTES = 65_536L
         const val MAX_STREAM_BYTES = 1_048_576L
         val REQUIRED_TESTS = setOf(
@@ -357,6 +400,7 @@ internal data class ConformanceValues(
     val gateway: HttpUrl,
     val applicationId: String,
     val environment: String,
+    val identityProvider: String,
     val feature: String,
     val errorMappingFeature: String,
     val model: String,
@@ -365,6 +409,10 @@ internal data class ConformanceValues(
     val expectedPins: Map<String, String>,
     val requireLicensed: Boolean,
     val runId: String,
+    val workflowRunId: String,
+    val runAttempt: String,
+    val deviceGrantSha256: String,
+    val sourceCommit: String,
 ) {
     fun quotaUrl(): HttpUrl = gateway.resolve("/client/v1/features/$feature/quota")
         ?: error("invalid quota URL")
@@ -376,6 +424,8 @@ internal data class ConformanceValues(
         private val IDENTIFIER = Regex("^[a-z][a-z0-9_-]{0,62}$")
         private val APPLICATION_ID = Regex("^app_[0-7][0-9A-HJKMNP-TV-Z]{25}$")
         private val RUN_ID = Regex("^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
+        private val RUN_ATTEMPT = Regex("^[1-9][0-9]{0,8}$")
+        private val WORKFLOW_RUN_ID = Regex("^[1-9][0-9]{0,19}$")
         private val SHA256 = Regex("^[0-9a-f]{64}$")
         private val COMMIT = Regex("^[0-9a-f]{40}$")
         private val IMAGE = Regex("^sha256:[0-9a-f]{64}$")
@@ -384,7 +434,13 @@ internal data class ConformanceValues(
         private val GATEWAY_ORIGIN = Regex("^https://[a-z0-9][A-Za-z0-9.-]*(?::[1-9][0-9]{0,4})?(?:/[A-Za-z0-9_~.-]+)*$")
         private val KEY_ID = Regex("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
-        fun load(activity: Activity, runIdInput: String?): ConformanceValues? = runCatching {
+        fun load(
+            activity: Activity,
+            runIdInput: String?,
+            workflowRunIdInput: String?,
+            runAttemptInput: String?,
+            grantSha256Input: String?,
+        ): ConformanceValues? = runCatching {
             val metadata = activity.packageManager
                 .getApplicationInfo(activity.packageName, PackageManager.GET_META_DATA).metaData
             val gatewayText = metadata.required("dev.latchway.GATEWAY_URL", GATEWAY_ORIGIN)
@@ -394,6 +450,7 @@ internal data class ConformanceValues(
             require(gateway.isHttps)
             val applicationId = metadata.required("dev.latchway.APPLICATION_ID", APPLICATION_ID)
             val environment = metadata.required("dev.latchway.ENVIRONMENT", IDENTIFIER)
+            val identityProvider = metadata.required("dev.latchway.IDENTITY_PROVIDER", IDENTIFIER)
             val feature = metadata.required("dev.latchway.FEATURE", IDENTIFIER)
             val errorMappingFeature = metadata.required("dev.latchway.ERROR_MAPPING_FEATURE", IDENTIFIER)
             require(errorMappingFeature != feature)
@@ -417,6 +474,12 @@ internal data class ConformanceValues(
             val requireLicensed = metadata.getString("dev.latchway.REQUIRE_LICENSED") == "true"
             require(requireLicensed)
             val runId = requireNotNull(runIdInput).also { require(RUN_ID.matches(it)) }
+            val workflowRunId = requireNotNull(workflowRunIdInput).also {
+                require(WORKFLOW_RUN_ID.matches(it))
+            }
+            val runAttempt = requireNotNull(runAttemptInput).also { require(RUN_ATTEMPT.matches(it)) }
+            require(runId == "play-integrity-$workflowRunId-$runAttempt")
+            val deviceGrantSha256 = requireNotNull(grantSha256Input).also { require(SHA256.matches(it)) }
             val expectedPins = mapOf(
                 "application_identifier" to expectedPackage,
                 "app_version" to expectedVersion,
@@ -442,6 +505,7 @@ internal data class ConformanceValues(
                 gateway,
                 applicationId,
                 environment,
+                identityProvider,
                 feature,
                 errorMappingFeature,
                 model,
@@ -450,6 +514,10 @@ internal data class ConformanceValues(
                 expectedPins,
                 requireLicensed,
                 runId,
+                workflowRunId,
+                runAttempt,
+                deviceGrantSha256,
+                sourceCommit,
             )
         }.getOrNull()
     }

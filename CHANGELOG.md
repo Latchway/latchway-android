@@ -9,6 +9,9 @@ Versioning once package publication begins.
 
 ### Added
 
+- A run-bound, terminal one-use identity-JWT bootstrap for the Play-distributed
+  conformance host, plus fail-closed unsigned Release AAB staging and isolated
+  no-checkout signing with canonical source/core/contract/gateway metadata and hashes.
 - Installation Family and configured client-component APIs with independent
   Android Keystore P-256 keys, encrypted refresh chains, delegated feature
   scope, child-only revocation, family-wide local key retirement, and redacted
@@ -26,6 +29,23 @@ Versioning once package publication begins.
 
 ### Security
 
+- The physical collector now revalidates the signed lease immediately before
+  app-data reset and streams the identity JWT only over an Android shell-owned
+  stdin pipe; the grant is never an argument, file, preference, log, Firebase
+  session, or evidence field, cannot be staged or consumed twice, and is bound
+  to the exact Latchway application, Android package, and identity provider.
+  The v2 lease binds the exact compact-token SHA-256; after provider verification
+  the trusted server atomically consumes that digest once, and signed teardown
+  evidence requires the gateway receipt to bind the spent digest and lease.
+  This remains compatible with Firebase ID tokens that do not carry `jti`.
+- Upload-key material is unavailable to Gradle and repository candidate code.
+  A canonical pre-sign payload manifest survives the signer boundary, and a
+  separate no-secret verifier recomputes it before cryptographic verification.
+  Byte-level ZIP validation rejects local/central metadata mismatches,
+  alternate-name or unallowlisted extra fields, non-regular/special modes,
+  overlaps, ambiguous descriptors, trailing/polyglot bytes, ZIP64, unsigned
+  appended entries, deleted entries, partial signatures, extra signers, and
+  certificate mismatch.
 - The OkHttp network interceptor now issues a fresh DPoP proof for every
   permitted attempt, rejects indeterminate internal connection replay, and
   rejects same-origin requests outside the allowed Latchway data-plane paths,

@@ -207,27 +207,60 @@ internal fun applicationIdentity(context: Context, values: ConformanceValues): A
         installerPackage = installer,
         playTrack = values.playTrack,
     )
-    val pins = mapOf(
-        "application_identifier" to context.packageName,
-        "app_version" to version,
-        "build_number" to build,
-        "signing_certificate_sha256" to certificate,
-        "cloud_project_number" to values.cloudProjectNumber.toString(),
-        "installer_package" to installer,
-        "play_track" to values.playTrack,
-        "require_licensed" to values.requireLicensed.toString(),
-        "source_commit" to values.expectedPins.getValue("source_commit"),
-        "core_commit" to values.expectedPins.getValue("core_commit"),
-        "contract_bundle_sha256" to values.expectedPins.getValue("contract_bundle_sha256"),
-        "gateway_image_digest" to values.expectedPins.getValue("gateway_image_digest"),
-        "gateway_configuration_sha256" to values.expectedPins.getValue("gateway_configuration_sha256"),
-        "gateway_origin" to values.expectedPins.getValue("gateway_origin"),
-        "gateway_environment" to values.environment,
-        "gateway_deployment_key_id" to values.expectedPins.getValue("gateway_deployment_key_id"),
-        "gateway_deployment_statement_sha256" to values.expectedPins.getValue("gateway_deployment_statement_sha256"),
-        "gateway_deployment_public_key_sha256" to values.expectedPins.getValue("gateway_deployment_public_key_sha256"),
+    val pins = completeApplicationPins(
+        expectedPins = values.expectedPins,
+        applicationIdentifier = context.packageName,
+        appVersion = version,
+        buildNumber = build,
+        signingCertificateSha256 = certificate,
+        cloudProjectNumber = values.cloudProjectNumber.toString(),
+        installerPackage = installer,
+        playTrack = values.playTrack,
+        requireLicensed = values.requireLicensed.toString(),
+        gatewayEnvironment = values.environment,
+        errorMappingFeature = values.errorMappingFeature,
     )
     return ApplicationIdentity(observation, pins)
+}
+
+internal fun completeApplicationPins(
+    expectedPins: Map<String, String>,
+    applicationIdentifier: String,
+    appVersion: String,
+    buildNumber: String,
+    signingCertificateSha256: String,
+    cloudProjectNumber: String,
+    installerPackage: String,
+    playTrack: String,
+    requireLicensed: String,
+    gatewayEnvironment: String,
+    errorMappingFeature: String,
+): Map<String, String> {
+    val pins = mapOf(
+        "application_identifier" to applicationIdentifier,
+        "app_version" to appVersion,
+        "build_number" to buildNumber,
+        "signing_certificate_sha256" to signingCertificateSha256,
+        "cloud_project_number" to cloudProjectNumber,
+        "installer_package" to installerPackage,
+        "play_track" to playTrack,
+        "require_licensed" to requireLicensed,
+        "source_commit" to expectedPins.getValue("source_commit"),
+        "core_commit" to expectedPins.getValue("core_commit"),
+        "contract_bundle_sha256" to expectedPins.getValue("contract_bundle_sha256"),
+        "gateway_image_digest" to expectedPins.getValue("gateway_image_digest"),
+        "gateway_configuration_sha256" to expectedPins.getValue("gateway_configuration_sha256"),
+        "gateway_origin" to expectedPins.getValue("gateway_origin"),
+        "gateway_environment" to gatewayEnvironment,
+        "gateway_deployment_key_id" to expectedPins.getValue("gateway_deployment_key_id"),
+        "gateway_deployment_statement_sha256" to expectedPins.getValue("gateway_deployment_statement_sha256"),
+        "gateway_deployment_public_key_sha256" to expectedPins.getValue("gateway_deployment_public_key_sha256"),
+        "error_mapping_feature" to errorMappingFeature,
+    )
+    require(pins.keys == expectedPins.keys) {
+        "runtime and expected application pin keys differ"
+    }
+    return pins
 }
 
 internal fun deviceFacts(backing: KeyBacking?): DeviceObservationFacts {

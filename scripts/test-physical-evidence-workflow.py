@@ -3,13 +3,20 @@
 
 from __future__ import annotations
 
+import os
 import pathlib
 import re
+import subprocess
+import tempfile
 import unittest
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "physical-play-integrity.yml"
+RUNNER = ROOT / "scripts" / "run-physical-play-integrity.sh"
+ACTIVITY = ROOT / "sample-conformance" / "src" / "main" / "kotlin" / "dev" / "latchway" / "sample" / "conformance" / "ConformanceActivity.kt"
+BOOTSTRAP = ROOT / "sample-conformance" / "src" / "main" / "kotlin" / "dev" / "latchway" / "sample" / "conformance" / "OneTimeIdentityGrant.kt"
+MANIFEST = ROOT / "sample-conformance" / "src" / "main" / "AndroidManifest.xml"
 
 
 def job_block(source: str, job: str) -> str:
@@ -28,6 +35,10 @@ class PhysicalEvidenceWorkflowTests(unittest.TestCase):
         cls.authorize = job_block(cls.source, "authorize-source")
         cls.collect = job_block(cls.source, "play-integrity-production")
         cls.attest = job_block(cls.source, "attest")
+        cls.runner = RUNNER.read_text(encoding="utf-8")
+        cls.activity = ACTIVITY.read_text(encoding="utf-8")
+        cls.bootstrap = BOOTSTRAP.read_text(encoding="utf-8")
+        cls.manifest = MANIFEST.read_text(encoding="utf-8")
 
     def test_source_authorization_is_github_hosted_and_candidate_code_free(self) -> None:
         self.assertIn("runs-on: ubuntu-24.04", self.authorize)
@@ -78,6 +89,10 @@ class PhysicalEvidenceWorkflowTests(unittest.TestCase):
             "caller_supplied_claims_accepted:false", "out_of_band_watchdog:true",
             "destroy_on_disconnect:true",
             'latchway-physical-evidence/android-play-integrity', ".grant.single_use == true",
+            ".grant.application_id == $application_id",
+            ".grant.package_name == $package_name",
+            ".grant.identity_provider == $identity_provider",
+            '(.grant | keys) == ["application_id","audience"',
             ".grant.issued_at_unix",
             ".grant.expires_at_unix <= .expires_at_unix",
             "(.grant.expires_at_unix - .grant.issued_at_unix) <= 300",
@@ -85,6 +100,175 @@ class PhysicalEvidenceWorkflowTests(unittest.TestCase):
             "--deny-self-hosted-runners", "openssl dgst -sha256 -verify",
         ):
             self.assertIn(marker, self.collect)
+
+    def test_one_use_identity_grant_is_hash_bound_and_streamed_only_over_stdin(self) -> None:
+        self.assertIn(
+            "LATCHWAY_ONE_TIME_DEVICE_GRANT: ${{ secrets.LATCHWAY_ONE_TIME_DEVICE_GRANT }}",
+            self.collect,
+        )
+        self.assertEqual(self.authorize.count("LATCHWAY_ONE_TIME_DEVICE_GRANT"), 0)
+        self.assertEqual(self.attest.count("LATCHWAY_ONE_TIME_DEVICE_GRANT"), 0)
+        for marker in (
+            "LATCHWAY_RUN_ATTEMPT",
+            "LATCHWAY_ANDROID_DEVICE_GRANT_SHA256",
+            "actual_grant_sha256",
+            'one_time_device_grant="${LATCHWAY_ONE_TIME_DEVICE_GRANT:-}"',
+            "set +x",
+            "export -n one_time_device_grant",
+            "unset LATCHWAY_ONE_TIME_DEVICE_GRANT",
+            'shell pm clear "$LATCHWAY_PACKAGE_NAME"',
+            "content write --uri \"$grant_uri\"",
+            "latchway-physical-evidence/android-play-integrity",
+            "application_id=$LATCHWAY_APPLICATION_ID",
+            "package_name=$LATCHWAY_PACKAGE_NAME",
+            "identity_provider=$LATCHWAY_IDENTITY_PROVIDER",
+            "--es dev.latchway.RUN_ATTEMPT",
+            "--es dev.latchway.IDENTITY_GRANT_SHA256",
+        ):
+            self.assertIn(marker, self.runner)
+        self.assertLess(
+            self.runner.index("unset LATCHWAY_ONE_TIME_DEVICE_GRANT"),
+            self.runner.index('repository_root="$(cd'),
+        )
+        self.assertLess(
+            self.runner.index('shell pm clear "$LATCHWAY_PACKAGE_NAME"'),
+            self.runner.index("content write --uri \"$grant_uri\""),
+        )
+        self.assertIn(
+            'printf \'%s\' "$one_time_device_grant" | adb_device shell content write',
+            self.runner,
+        )
+        for forbidden in (
+            "--es dev.latchway.IDENTITY_GRANT ",
+            "--es dev.latchway.ONE_TIME_DEVICE_GRANT ",
+            "echo \"$one_time_device_grant\"",
+            "play-integrity-observation.json\" \"$one_time_device_grant",
+        ):
+            self.assertNotIn(forbidden, self.runner)
+
+        self.assertNotIn("jti_sha256", self.runner + self.collect)
+        self.assertNotIn("hash-jwt-jti.py", self.runner + self.collect)
+        self.assertLess(
+            self.runner.index('actual_grant_sha256="$(printf'),
+            self.runner.index('content write --uri "$grant_uri"'),
+        )
+
+    def test_provider_agnostic_digest_one_use_contract_is_signed_and_observed(self) -> None:
+        for marker in (
+            'latchway.physical-collector-lease.v2',
+            'identity_grant_digest_one_use_enforced:true',
+            'latchway.physical-collector-teardown.v2',
+            'identity_grant_digest_consumed_once:true',
+            'gateway_run_receipt_binds_identity_grant_digest:true',
+            '.observations.identity_grant_sha256 == $grant',
+            '.observations.gateway_run_receipt_sha256',
+            '(.grant | keys) == ["application_id","audience","expires_at_unix","identity_provider","issued_at_unix","package_name","run_attempt","run_id","sha256","single_use","source_commit"]',
+        ):
+            self.assertIn(marker, self.collect)
+        self.assertEqual(0, self.source.count("jti_sha256"))
+        self.assertIn('.supervisor.identity_grant_digest_one_use_enforced == true', self.runner)
+        finalize = self.collect.split(
+            "- name: Unconditionally finalize, deregister, and arm collector destruction",
+            1,
+        )[1].split("- name: Retain bounded unsigned physical evidence", 1)[0]
+        protected_digest = (
+            "DEVICE_GRANT_SHA256: ${{ vars.LATCHWAY_ANDROID_DEVICE_GRANT_SHA256 }}"
+        )
+        self.assertIn(protected_digest, finalize)
+        self.assertIn(protected_digest, self.attest)
+
+    def test_grant_is_not_traced_or_reexported_from_an_ambient_lowercase_name(self) -> None:
+        upper_sentinel = "eyJhbGciOiJSUzI1NiJ9.dXBwZXItc2VjcmV0.c2lnbmF0dXJl"
+        lower_sentinel = "ambient-lowercase-secret-sentinel"
+        with tempfile.TemporaryDirectory(prefix="latchway-runner-path-") as temporary:
+            fake_dirname = pathlib.Path(temporary) / "dirname"
+            fake_dirname.write_text(
+                "#!/bin/sh\n"
+                "if [ -n \"${one_time_device_grant+x}\" ]; then\n"
+                "  echo \"child inherited lowercase grant\" >&2\n"
+                "fi\n"
+                "exec /usr/bin/dirname \"$@\"\n",
+                encoding="utf-8",
+            )
+            fake_dirname.chmod(0o700)
+            environment = dict(os.environ)
+            environment.update(
+                {
+                    "LATCHWAY_ONE_TIME_DEVICE_GRANT": upper_sentinel,
+                    "one_time_device_grant": lower_sentinel,
+                    "PATH": temporary + os.pathsep + environment["PATH"],
+                }
+            )
+            result = subprocess.run(
+                ("bash", "-x", str(RUNNER)),
+                cwd=ROOT,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=10,
+                check=False,
+            )
+        combined = result.stdout + result.stderr
+        self.assertNotEqual(0, result.returncode)
+        self.assertNotIn(upper_sentinel.encode("ascii"), combined)
+        self.assertNotIn(lower_sentinel.encode("ascii"), combined)
+        self.assertNotIn(b"child inherited lowercase grant", combined)
+
+    def test_installed_apk_set_is_recollected_after_observation_and_bound_to_profile(self) -> None:
+        for marker in (
+            "capture_installed_apk_set()",
+            'pre_run_apk_set_sha256="$(capture_installed_apk_set pre-run',
+            'post_run_apk_set_sha256="$(capture_installed_apk_set post-run',
+            'cmp --silent "$apk_set_manifest" "$post_run_apk_set_manifest"',
+            'export LATCHWAY_OBSERVED_INSTALLED_APK_SET_SHA256="$post_run_apk_set_sha256"',
+            'os.environ["LATCHWAY_OBSERVED_INSTALLED_APK_SET_SHA256"]',
+        ):
+            self.assertIn(marker, self.runner)
+        self.assertEqual(2, self.runner.count("capture_installed_apk_set "))
+        self.assertLess(
+            self.runner.index('[[ "$observation_ready" == true ]]'),
+            self.runner.index('post_run_apk_set_sha256="$(capture_installed_apk_set post-run'),
+        )
+        self.assertLess(
+            self.runner.index('post_run_apk_set_sha256="$(capture_installed_apk_set post-run'),
+            self.runner.index('python3 "$repository_root/scripts/device-evidence.py" finalize'),
+        )
+
+    def test_app_bootstrap_is_shell_only_memory_only_and_terminal(self) -> None:
+        for marker in (
+            "android:writePermission=\"android.permission.DUMP\"",
+            "${applicationId}.device-bootstrap",
+        ):
+            self.assertIn(marker, self.manifest)
+        for marker in (
+            "Binder.getCallingUid()",
+            "ANDROID_SHELL_UID",
+            "ParcelFileDescriptor.createReliablePipe()",
+            "State.Staging",
+            "State.Terminal",
+            "compareAndSet(State.Empty, State.Staging)",
+            "OneUseIdentityTokenProvider",
+            "pending.getAndSet(null)",
+            "token=[REDACTED]",
+            'one("application_id")',
+            'one("package_name")',
+            'one("identity_provider")',
+            'applicationId == embeddedMetadata(context, "dev.latchway.APPLICATION_ID")',
+            "packageName == context.packageName",
+            'identityProvider == embeddedMetadata(context, "dev.latchway.IDENTITY_PROVIDER")',
+        ):
+            self.assertIn(marker, self.bootstrap)
+        for forbidden in (
+            "SharedPreferences",
+            "openFileOutput",
+            "FileOutputStream",
+            "FirebaseAuth",
+            "currentUser",
+            "signInWithCustomToken",
+        ):
+            self.assertNotIn(forbidden, self.bootstrap + self.activity)
+        self.assertIn("OneTimeIdentityGrantSlot.takeProvider(grantCoordinates)", self.activity)
+        self.assertIn("identityProvider = values.identityProvider", self.activity)
         self.assertGreaterEqual(self.collect.count("if: ${{ always() }}"), 2)
         self.assertIn("Wipe device app data even when collection fails", self.collect)
         self.assertIn("shell pm clear", self.collect)

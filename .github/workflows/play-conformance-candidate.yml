@@ -1,0 +1,479 @@
+name: Build and isolate the Play conformance candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Full latchway-android commit to embed in the Play candidate
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: play-conformance-candidate
+  cancel-in-progress: false
+
+jobs:
+  build-unsigned:
+    name: Build the closed unsigned AAB without signing material
+    if: github.repository == 'Latchway/latchway-android' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the exact candidate source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.source_commit }}
+          persist-credentials: false
+      - name: Validate the authorized source coordinate
+        env:
+          EXPECTED_SOURCE_COMMIT: ${{ vars.LATCHWAY_SOURCE_COMMIT }}
+          REQUESTED_SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$REQUESTED_SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$REQUESTED_SOURCE_COMMIT" = "$EXPECTED_SOURCE_COMMIT"
+          test "$(git rev-parse HEAD)" = "$REQUESTED_SOURCE_COMMIT"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+      - name: Configure Java 17
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Configure the Android SDK
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        with:
+          cmdline-tools-version: "14742923" # 20.0
+          packages: ""
+      - name: Install the pinned Android platform and build tools
+        run: scripts/install-android-sdk.sh
+      - name: Produce only the closed unsigned candidate
+        env:
+          LATCHWAY_CANDIDATE_OUTPUT_DIR: ${{ runner.temp }}/play-conformance-unsigned
+          LATCHWAY_PLAY_SIGNING_MODE: unsigned
+          LATCHWAY_PACKAGE_NAME: ${{ vars.LATCHWAY_ANDROID_PACKAGE_NAME }}
+          LATCHWAY_APP_VERSION: ${{ vars.LATCHWAY_ANDROID_APP_VERSION }}
+          LATCHWAY_VERSION_CODE: ${{ vars.LATCHWAY_ANDROID_VERSION_CODE }}
+          LATCHWAY_SIGNING_CERTIFICATE_SHA256: ${{ vars.LATCHWAY_ANDROID_SIGNING_CERTIFICATE_SHA256 }}
+          LATCHWAY_PLAY_TRACK: ${{ vars.LATCHWAY_ANDROID_PLAY_TRACK }}
+          LATCHWAY_CLOUD_PROJECT_NUMBER: ${{ vars.LATCHWAY_ANDROID_CLOUD_PROJECT_NUMBER }}
+          LATCHWAY_SOURCE_COMMIT: ${{ inputs.source_commit }}
+          LATCHWAY_CORE_COMMIT: ${{ vars.LATCHWAY_CORE_COMMIT }}
+          LATCHWAY_SDK_VERSION: ${{ vars.LATCHWAY_ANDROID_SDK_VERSION }}
+          LATCHWAY_CONTRACT_VERSION: ${{ vars.LATCHWAY_CONTRACT_VERSION }}
+          LATCHWAY_CONTRACT_BUNDLE_SHA256: ${{ vars.LATCHWAY_CONTRACT_BUNDLE_SHA256 }}
+          LATCHWAY_GATEWAY_IMAGE_DIGEST: ${{ vars.LATCHWAY_GATEWAY_IMAGE_DIGEST }}
+          LATCHWAY_GATEWAY_CONFIGURATION_SHA256: ${{ vars.LATCHWAY_GATEWAY_CONFIGURATION_SHA256 }}
+          LATCHWAY_GATEWAY_ORIGIN: ${{ vars.LATCHWAY_GATEWAY_ORIGIN }}
+          LATCHWAY_GATEWAY_DEPLOYMENT_KEY_ID: ${{ vars.LATCHWAY_GATEWAY_DEPLOYMENT_KEY_ID }}
+          LATCHWAY_GATEWAY_DEPLOYMENT_STATEMENT_SHA256: ${{ vars.LATCHWAY_GATEWAY_DEPLOYMENT_STATEMENT_SHA256 }}
+          LATCHWAY_GATEWAY_DEPLOYMENT_PUBLIC_KEY_SHA256: ${{ vars.LATCHWAY_GATEWAY_DEPLOYMENT_PUBLIC_KEY_SHA256 }}
+          LATCHWAY_ENVIRONMENT: ${{ vars.LATCHWAY_ENVIRONMENT }}
+          LATCHWAY_IDENTITY_PROVIDER: ${{ vars.LATCHWAY_IDENTITY_PROVIDER }}
+          LATCHWAY_APPLICATION_ID: ${{ vars.LATCHWAY_APPLICATION_ID }}
+          LATCHWAY_FEATURE: ${{ vars.LATCHWAY_FEATURE }}
+          LATCHWAY_ERROR_MAPPING_FEATURE: ${{ vars.LATCHWAY_ERROR_MAPPING_FEATURE }}
+          LATCHWAY_MODEL: ${{ vars.LATCHWAY_MODEL }}
+        run: scripts/stage-play-conformance-candidate.sh
+      - name: Stage the verifier source separately from candidate data
+        run: |
+          set -Eeuo pipefail
+          destination="$RUNNER_TEMP/play-aab-verifier-source"
+          mkdir -m 0700 "$destination"
+          install -m 0600 scripts/VerifyPlayAabSignature.java "$destination/"
+          (cd "$destination" && sha256sum VerifyPlayAabSignature.java > SHA256SUMS)
+      - name: Transfer the unsigned data set to the isolated signer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: play-conformance-unsigned-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/play-conformance-unsigned/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Transfer verifier source without signing material
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: play-aab-verifier-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/play-aab-verifier-source/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  sign-isolated:
+    name: Sign the closed AAB without checkout or Gradle
+    needs: build-unsigned
+    if: github.repository == 'Latchway/latchway-android' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: play-upload-signing
+    permissions:
+      actions: read
+    steps:
+      - name: Configure Java 17
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Download only the unsigned candidate data
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: play-conformance-unsigned-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/play-conformance-unsigned
+      - name: Download the independently pinned verifier source
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: play-aab-verifier-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/play-aab-verifier-source
+      - name: Validate the exact closed unsigned set before secrets exist
+        id: unsigned
+        shell: bash
+        env:
+          EXPECTED_VERIFIER_SHA256: ${{ vars.LATCHWAY_PLAY_AAB_VERIFIER_SHA256 }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -Eeuo pipefail
+          root="$RUNNER_TEMP/play-conformance-unsigned"
+          verifier="$RUNNER_TEMP/play-aab-verifier-source"
+          test -d "$root" && test ! -L "$root"
+          test -d "$verifier" && test ! -L "$verifier"
+          python3 - "$root" "$SOURCE_COMMIT" "$GITHUB_OUTPUT" "$RUNNER_TEMP/unsigned-aab-name" <<'PY'
+          import hashlib, json, pathlib, re, stat, sys, zipfile
+          root, source_commit, github_output, coordinate = pathlib.Path(sys.argv[1]), sys.argv[2], pathlib.Path(sys.argv[3]), pathlib.Path(sys.argv[4])
+          children = list(root.iterdir())
+          if len(children) != 4 or any(not path.is_file() or path.is_symlink() for path in children):
+              raise SystemExit("unsigned candidate is not the exact four-file set")
+          manifest_path = root / "play-conformance-candidate.json"
+          sums_path = root / "SHA256SUMS"
+          if not manifest_path.is_file() or not sums_path.is_file():
+              raise SystemExit("unsigned candidate metadata is missing")
+          if manifest_path.stat().st_size > 1024 * 1024 or sums_path.stat().st_size > 4096:
+              raise SystemExit("unsigned candidate metadata exceeds its bound")
+          value = json.loads(manifest_path.read_text(encoding="utf-8"))
+          if value.get("schema_version") != "latchway.android-play-conformance-candidate.v1":
+              raise SystemExit("unsigned candidate schema is invalid")
+          if value.get("repository") != "Latchway/latchway-android" or value.get("source", {}).get("commit") != source_commit:
+              raise SystemExit("unsigned candidate source binding is invalid")
+          candidate = value.get("candidate", {})
+          aab_name = candidate.get("aab_file")
+          if not isinstance(aab_name, str) or re.fullmatch(r"latchway-play-conformance-[A-Za-z0-9._+-]{1,64}-[1-9][0-9]{0,9}\.aab", aab_name) is None:
+              raise SystemExit("unsigned candidate AAB name is invalid")
+          if candidate.get("signing_mode") != "unsigned" or candidate.get("upload_certificate_sha256") is not None:
+              raise SystemExit("repository producer emitted a signed candidate")
+          payload_binding = candidate.get("presign_payload_manifest")
+          if not isinstance(payload_binding, dict) or set(payload_binding) != {"file", "schema", "sha256"} or payload_binding.get("file") != "play-conformance-presign-payload.manifest" or payload_binding.get("schema") != "latchway.android-aab-presign-payload.v1" or not isinstance(payload_binding.get("sha256"), str) or re.fullmatch(r"[0-9a-f]{64}", payload_binding["sha256"]) is None:
+              raise SystemExit("pre-sign payload manifest binding is invalid")
+          payload_path = root / "play-conformance-presign-payload.manifest"
+          expected_names = {aab_name, "play-conformance-presign-payload.manifest", "play-conformance-candidate.json", "SHA256SUMS"}
+          if {path.name for path in children} != expected_names:
+              raise SystemExit("unsigned candidate has an unexpected file")
+          aab = root / aab_name
+          if not 0 < aab.stat().st_size <= 2 * 1024**3:
+              raise SystemExit("unsigned candidate AAB size is invalid")
+          if not 0 < payload_path.stat().st_size <= 64 * 1024**2:
+              raise SystemExit("pre-sign payload manifest size is invalid")
+          def digest(path):
+              value = hashlib.sha256()
+              with path.open("rb") as source:
+                  for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                      value.update(chunk)
+              return value.hexdigest()
+          if candidate.get("aab_sha256") != digest(aab):
+              raise SystemExit("unsigned candidate AAB hash is invalid")
+          if payload_binding["sha256"] != digest(payload_path):
+              raise SystemExit("pre-sign payload manifest hash is invalid")
+          rows = sums_path.read_text("ascii").splitlines()
+          expected_rows = {
+              f"{digest(aab)}  {aab_name}",
+              f"{digest(payload_path)}  play-conformance-presign-payload.manifest",
+              f"{digest(manifest_path)}  play-conformance-candidate.json",
+          }
+          if set(rows) != expected_rows or len(rows) != 3:
+              raise SystemExit("unsigned candidate checksum set is invalid")
+          with zipfile.ZipFile(aab) as archive:
+              infos = archive.infolist()
+              names = [item.filename for item in infos]
+              if len(names) != len(set(names)) or not names:
+                  raise SystemExit("unsigned candidate ZIP names are invalid")
+              expanded = 0
+              for item in infos:
+                  mode = (item.external_attr >> 16) & 0xFFFF
+                  name = item.filename
+                  if item.is_dir() or item.flag_bits & 1 or name.startswith("/") or "\\" in name or any(part in {"", ".", ".."} for part in name.split("/")) or (mode and not stat.S_ISREG(mode)):
+                      raise SystemExit("unsigned candidate contains an unsafe ZIP entry")
+                  upper_name = name.upper()
+                  if upper_name == "META-INF/MANIFEST.MF" or upper_name.startswith("META-INF/SIG-") or re.fullmatch(r"META-INF/[^/]+\.(?:SF|RSA|DSA|EC)", name, re.IGNORECASE):
+                      raise SystemExit("unsigned candidate already contains signing metadata")
+                  expanded += item.file_size
+                  if expanded > 2 * 1024**3:
+                      raise SystemExit("unsigned candidate expands beyond the reviewed bound")
+          with github_output.open("a", encoding="utf-8") as output:
+              output.write(f"aab_file={aab_name}\n")
+              output.write(f"unsigned_aab_sha256={digest(aab)}\n")
+              output.write(f"unsigned_manifest_sha256={digest(manifest_path)}\n")
+              output.write(f"presign_payload_manifest_sha256={digest(payload_path)}\n")
+          coordinate.write_text(aab_name + "\n", encoding="ascii")
+          PY
+          [[ "$EXPECTED_VERIFIER_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s\n' SHA256SUMS VerifyPlayAabSignature.java | LC_ALL=C sort > "$RUNNER_TEMP/signer-verifier-expected.txt"
+          find "$verifier" -mindepth 1 -maxdepth 1 -type f -print | sed "s#^$verifier/##" | LC_ALL=C sort > "$RUNNER_TEMP/signer-verifier-actual.txt"
+          cmp --silent "$RUNNER_TEMP/signer-verifier-expected.txt" "$RUNNER_TEMP/signer-verifier-actual.txt"
+          test -z "$(find "$verifier" -mindepth 1 ! -type f -print -quit)"
+          (cd "$verifier" && sha256sum --check --strict SHA256SUMS)
+          test "$(sha256sum "$verifier/VerifyPlayAabSignature.java" | awk '{print $1}')" = "$EXPECTED_VERIFIER_SHA256"
+          IFS= read -r aab_file < "$RUNNER_TEMP/unsigned-aab-name"
+          [[ "$aab_file" =~ ^latchway-play-conformance-[A-Za-z0-9._+-]{1,64}-[1-9][0-9]{0,9}\.aab$ ]]
+          classes="$RUNNER_TEMP/play-aab-verifier-signer-classes"
+          mkdir -m 0700 "$classes"
+          javac -d "$classes" "$verifier/VerifyPlayAabSignature.java"
+          java -cp "$classes" VerifyPlayAabSignature --emit-presign-manifest \
+            "$root/$aab_file" "$RUNNER_TEMP/signer-observed-presign.manifest"
+          cmp --silent "$root/play-conformance-presign-payload.manifest" "$RUNNER_TEMP/signer-observed-presign.manifest"
+      - name: Sign only the validated AAB with isolated upload-key material
+        id: signing
+        shell: bash
+        env:
+          AAB_FILE: ${{ steps.unsigned.outputs.aab_file }}
+          EXPECTED_UPLOAD_CERTIFICATE_SHA256: ${{ vars.LATCHWAY_PLAY_UPLOAD_CERTIFICATE_SHA256 }}
+          PLAY_SIGNATURE_ALGORITHM: ${{ vars.LATCHWAY_PLAY_UPLOAD_SIGNATURE_ALGORITHM }}
+          PLAY_KEYSTORE_BASE64: ${{ secrets.LATCHWAY_PLAY_UPLOAD_KEYSTORE_BASE64 }}
+          PLAY_KEYSTORE_PASSWORD: ${{ secrets.LATCHWAY_PLAY_UPLOAD_KEYSTORE_PASSWORD }}
+          PLAY_KEY_ALIAS: ${{ secrets.LATCHWAY_PLAY_UPLOAD_KEY_ALIAS }}
+          PLAY_KEY_PASSWORD: ${{ secrets.LATCHWAY_PLAY_UPLOAD_KEY_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          set +x
+          umask 077
+          [[ "$AAB_FILE" =~ ^latchway-play-conformance-[A-Za-z0-9._+-]{1,64}-[1-9][0-9]{0,9}\.aab$ ]]
+          [[ "$EXPECTED_UPLOAD_CERTIFICATE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$PLAY_KEY_ALIAS" =~ ^[A-Za-z0-9._-]{1,128}$ ]]
+          case "$PLAY_SIGNATURE_ALGORITHM" in
+            SHA256withRSA|SHA256withECDSA) ;;
+            *) echo "unsupported Play upload-key signature algorithm" >&2; exit 2 ;;
+          esac
+          test -n "$PLAY_KEYSTORE_BASE64" && test -n "$PLAY_KEYSTORE_PASSWORD" && test -n "$PLAY_KEY_PASSWORD"
+          [[ "$PLAY_KEYSTORE_PASSWORD" != *$'\n'* && "$PLAY_KEYSTORE_PASSWORD" != *$'\r'* ]]
+          [[ "$PLAY_KEY_PASSWORD" != *$'\n'* && "$PLAY_KEY_PASSWORD" != *$'\r'* ]]
+          key_material=$PLAY_KEYSTORE_BASE64
+          store_password=$PLAY_KEYSTORE_PASSWORD
+          key_password=$PLAY_KEY_PASSWORD
+          key_alias=$PLAY_KEY_ALIAS
+          unset PLAY_KEYSTORE_BASE64 PLAY_KEYSTORE_PASSWORD PLAY_KEY_PASSWORD PLAY_KEY_ALIAS
+          keystore=$(mktemp "$RUNNER_TEMP/latchway-play-upload-key.XXXXXX")
+          certificate=$(mktemp "$RUNNER_TEMP/latchway-play-upload-certificate.XXXXXX")
+          cleanup() {
+            rm -f -- "$keystore" "$certificate"
+          }
+          trap cleanup EXIT HUP INT TERM
+          printf '%s' "$key_material" | base64 --decode > "$keystore"
+          key_material=""
+          test -s "$keystore" && test "$(wc -c < "$keystore")" -le 1048576
+          export LATCHWAY_SIGNER_STORE_PASSWORD="$store_password"
+          export LATCHWAY_SIGNER_KEY_PASSWORD="$key_password"
+          keytool -exportcert -keystore "$keystore" \
+            -storepass:env LATCHWAY_SIGNER_STORE_PASSWORD \
+            -alias "$key_alias" -keypass:env LATCHWAY_SIGNER_KEY_PASSWORD > "$certificate"
+          observed_certificate_sha256=$(sha256sum "$certificate" | awk '{print $1}')
+          test "$observed_certificate_sha256" = "$EXPECTED_UPLOAD_CERTIFICATE_SHA256"
+          aab="$RUNNER_TEMP/play-conformance-unsigned/$AAB_FILE"
+          jarsigner -keystore "$keystore" \
+            -storepass:env LATCHWAY_SIGNER_STORE_PASSWORD \
+            -keypass:env LATCHWAY_SIGNER_KEY_PASSWORD \
+            -digestalg SHA-256 -sigalg "$PLAY_SIGNATURE_ALGORITHM" -sigfile LATCHWY \
+            "$aab" "$key_alias" >/dev/null
+          unset LATCHWAY_SIGNER_STORE_PASSWORD LATCHWAY_SIGNER_KEY_PASSWORD
+          store_password=""
+          key_password=""
+          key_alias=""
+          rm -f -- "$keystore" "$certificate"
+          trap - EXIT HUP INT TERM
+          signed_aab_sha256=$(sha256sum "$aab" | awk '{print $1}')
+          {
+            printf 'signed_aab_sha256=%s\n' "$signed_aab_sha256"
+            printf 'upload_certificate_sha256=%s\n' "$observed_certificate_sha256"
+            printf 'signature_algorithm=%s\n' "$PLAY_SIGNATURE_ALGORITHM"
+          } >> "$GITHUB_OUTPUT"
+      - name: Seal the signed bytes without private material or repository execution
+        shell: bash
+        env:
+          AAB_FILE: ${{ steps.unsigned.outputs.aab_file }}
+          SIGNED_AAB_SHA256: ${{ steps.signing.outputs.signed_aab_sha256 }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          SIGNATURE_ALGORITHM: ${{ steps.signing.outputs.signature_algorithm }}
+          UNSIGNED_AAB_SHA256: ${{ steps.unsigned.outputs.unsigned_aab_sha256 }}
+          UNSIGNED_MANIFEST_SHA256: ${{ steps.unsigned.outputs.unsigned_manifest_sha256 }}
+          PRESIGN_PAYLOAD_MANIFEST_SHA256: ${{ steps.unsigned.outputs.presign_payload_manifest_sha256 }}
+          UPLOAD_CERTIFICATE_SHA256: ${{ steps.signing.outputs.upload_certificate_sha256 }}
+        run: |
+          set -Eeuo pipefail
+          root="$RUNNER_TEMP/play-conformance-unsigned"
+          mv "$root/play-conformance-candidate.json" "$root/play-conformance-unsigned-candidate.json"
+          rm -f -- "$root/SHA256SUMS"
+          python3 - "$root/play-conformance-signed-candidate.json" <<'PY'
+          import json, os, pathlib, re, sys
+          for name in ("SIGNED_AAB_SHA256", "UNSIGNED_AAB_SHA256", "UNSIGNED_MANIFEST_SHA256", "PRESIGN_PAYLOAD_MANIFEST_SHA256", "UPLOAD_CERTIFICATE_SHA256"):
+              if re.fullmatch(r"[0-9a-f]{64}", os.environ[name]) is None:
+                  raise SystemExit(f"invalid signed candidate digest: {name}")
+          value = {
+              "schema_version": "latchway.android-play-conformance-signed-candidate.v1",
+              "repository": "Latchway/latchway-android",
+              "source_commit": os.environ["SOURCE_COMMIT"],
+              "aab_file": os.environ["AAB_FILE"],
+              "unsigned_aab_sha256": os.environ["UNSIGNED_AAB_SHA256"],
+              "unsigned_candidate_manifest_sha256": os.environ["UNSIGNED_MANIFEST_SHA256"],
+              "presign_payload_manifest": {
+                  "file": "play-conformance-presign-payload.manifest",
+                  "schema": "latchway.android-aab-presign-payload.v1",
+                  "sha256": os.environ["PRESIGN_PAYLOAD_MANIFEST_SHA256"],
+              },
+              "signed_aab_sha256": os.environ["SIGNED_AAB_SHA256"],
+              "upload_certificate_sha256": os.environ["UPLOAD_CERTIFICATE_SHA256"],
+              "signing_boundary": {
+                  "checkout": False,
+                  "gradle": False,
+                  "candidate_code_executed_with_key_material": False,
+                  "signature_file": "LATCHWY",
+                  "signature_algorithm": os.environ["SIGNATURE_ALGORITHM"],
+              },
+          }
+          pathlib.Path(sys.argv[1]).write_bytes(
+              json.dumps(value, allow_nan=False, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+          )
+          PY
+          test "$(sha256sum "$root/$AAB_FILE" | awk '{print $1}')" = "$SIGNED_AAB_SHA256"
+          (cd "$root" && sha256sum \
+            "$AAB_FILE" \
+            play-conformance-presign-payload.manifest \
+            play-conformance-unsigned-candidate.json \
+            play-conformance-signed-candidate.json > SHA256SUMS)
+          test "$(find "$root" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" = 5
+          test -z "$(find "$root" -mindepth 1 ! -type f -print -quit)"
+      - name: Transfer signed bytes to a fresh no-secret verifier
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: play-conformance-signed-unverified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/play-conformance-unsigned/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  verify-signed:
+    name: Verify exact AAB entry coverage without checkout or secrets
+    needs: sign-isolated
+    if: github.repository == 'Latchway/latchway-android' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: play-candidate-verification
+    permissions:
+      actions: read
+    steps:
+      - name: Configure Java 17
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Download the signed data set
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: play-conformance-signed-unverified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/play-conformance-signed
+      - name: Download verifier source without a checkout
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: play-aab-verifier-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/play-aab-verifier-source
+      - name: Validate the closed set and exact full-entry signature coverage
+        shell: bash
+        env:
+          EXPECTED_UPLOAD_CERTIFICATE_SHA256: ${{ vars.LATCHWAY_PLAY_UPLOAD_CERTIFICATE_SHA256 }}
+          EXPECTED_VERIFIER_SHA256: ${{ vars.LATCHWAY_PLAY_AAB_VERIFIER_SHA256 }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -Eeuo pipefail
+          root="$RUNNER_TEMP/play-conformance-signed"
+          verifier="$RUNNER_TEMP/play-aab-verifier-source"
+          test -d "$root" && test ! -L "$root" && test -d "$verifier" && test ! -L "$verifier"
+          test -z "$(find "$root" "$verifier" -mindepth 1 ! -type f -print -quit)"
+          [[ "$EXPECTED_UPLOAD_CERTIFICATE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$EXPECTED_VERIFIER_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s\n' SHA256SUMS VerifyPlayAabSignature.java | LC_ALL=C sort > "$RUNNER_TEMP/verifier-expected.txt"
+          find "$verifier" -mindepth 1 -maxdepth 1 -type f -print | sed "s#^$verifier/##" | LC_ALL=C sort > "$RUNNER_TEMP/verifier-actual.txt"
+          cmp --silent "$RUNNER_TEMP/verifier-expected.txt" "$RUNNER_TEMP/verifier-actual.txt"
+          (cd "$verifier" && sha256sum --check --strict SHA256SUMS)
+          test "$(sha256sum "$verifier/VerifyPlayAabSignature.java" | awk '{print $1}')" = "$EXPECTED_VERIFIER_SHA256"
+          python3 - "$root" "$SOURCE_COMMIT" "$RUNNER_TEMP/signed-candidate-coordinates" "$EXPECTED_UPLOAD_CERTIFICATE_SHA256" <<'PY'
+          import hashlib, json, pathlib, re, sys
+          root, source_commit, output, expected_certificate = pathlib.Path(sys.argv[1]), sys.argv[2], pathlib.Path(sys.argv[3]), sys.argv[4]
+          signed_path = root / "play-conformance-signed-candidate.json"
+          unsigned_path = root / "play-conformance-unsigned-candidate.json"
+          sums_path = root / "SHA256SUMS"
+          if any(not path.is_file() or path.is_symlink() for path in (signed_path, unsigned_path, sums_path)):
+              raise SystemExit("signed candidate metadata is unsafe")
+          if not 0 < signed_path.stat().st_size <= 1024 * 1024 or not 0 < unsigned_path.stat().st_size <= 1024 * 1024 or not 0 < sums_path.stat().st_size <= 4096:
+              raise SystemExit("signed candidate metadata size is invalid")
+          signed = json.loads(signed_path.read_text(encoding="utf-8"))
+          unsigned = json.loads(unsigned_path.read_text(encoding="utf-8"))
+          if signed.get("schema_version") != "latchway.android-play-conformance-signed-candidate.v1" or signed.get("repository") != "Latchway/latchway-android" or signed.get("source_commit") != source_commit:
+              raise SystemExit("signed candidate binding is invalid")
+          aab_name = signed.get("aab_file")
+          if not isinstance(aab_name, str) or re.fullmatch(r"latchway-play-conformance-[A-Za-z0-9._+-]{1,64}-[1-9][0-9]{0,9}\.aab", aab_name) is None:
+              raise SystemExit("signed candidate AAB name is invalid")
+          expected_names = {aab_name, "play-conformance-presign-payload.manifest", "play-conformance-unsigned-candidate.json", "play-conformance-signed-candidate.json", "SHA256SUMS"}
+          children = list(root.iterdir())
+          if len(children) != 5 or {path.name for path in children} != expected_names or any(not path.is_file() or path.is_symlink() for path in children):
+              raise SystemExit("signed candidate is not the exact five-file set")
+          aab = root / aab_name
+          payload_path = root / "play-conformance-presign-payload.manifest"
+          if not 0 < aab.stat().st_size <= 2 * 1024**3 or not 0 < payload_path.stat().st_size <= 64 * 1024**2:
+              raise SystemExit("signed candidate file size is invalid")
+          def digest(path):
+              value = hashlib.sha256()
+              with path.open("rb") as source:
+                  for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                      value.update(chunk)
+              return value.hexdigest()
+          if signed.get("signed_aab_sha256") != digest(aab) or signed.get("unsigned_candidate_manifest_sha256") != digest(unsigned_path):
+              raise SystemExit("signed candidate digest binding is invalid")
+          unsigned_candidate = unsigned.get("candidate", {})
+          expected_payload_binding = {"file": "play-conformance-presign-payload.manifest", "schema": "latchway.android-aab-presign-payload.v1", "sha256": digest(payload_path)}
+          if signed.get("presign_payload_manifest") != expected_payload_binding or unsigned_candidate.get("presign_payload_manifest") != expected_payload_binding:
+              raise SystemExit("pre-sign payload manifest continuity binding is invalid")
+          if unsigned.get("schema_version") != "latchway.android-play-conformance-candidate.v1" or unsigned.get("repository") != "Latchway/latchway-android" or unsigned.get("source", {}).get("commit") != source_commit or unsigned_candidate.get("aab_file") != aab_name or unsigned_candidate.get("aab_sha256") != signed.get("unsigned_aab_sha256") or unsigned_candidate.get("signing_mode") != "unsigned" or unsigned_candidate.get("upload_certificate_sha256") is not None:
+              raise SystemExit("unsigned-to-signed candidate binding is invalid")
+          certificate = signed.get("upload_certificate_sha256")
+          if not isinstance(certificate, str) or re.fullmatch(r"[0-9a-f]{64}", certificate) is None or certificate != expected_certificate:
+              raise SystemExit("signed candidate certificate binding is invalid")
+          boundary = signed.get("signing_boundary")
+          if boundary not in (
+              {"checkout": False, "gradle": False, "candidate_code_executed_with_key_material": False, "signature_file": "LATCHWY", "signature_algorithm": "SHA256withRSA"},
+              {"checkout": False, "gradle": False, "candidate_code_executed_with_key_material": False, "signature_file": "LATCHWY", "signature_algorithm": "SHA256withECDSA"},
+          ):
+              raise SystemExit("signed candidate isolation claim is invalid")
+          rows = sums_path.read_text("ascii").splitlines()
+          expected_rows = {
+              f"{digest(aab)}  {aab_name}",
+              f"{digest(payload_path)}  play-conformance-presign-payload.manifest",
+              f"{digest(unsigned_path)}  play-conformance-unsigned-candidate.json",
+              f"{digest(signed_path)}  play-conformance-signed-candidate.json",
+          }
+          if len(rows) != 4 or set(rows) != expected_rows:
+              raise SystemExit("signed candidate checksum set is invalid")
+          output.write_text(aab_name + "\n" + certificate + "\n" + payload_path.name + "\n", encoding="ascii")
+          PY
+          classes="$RUNNER_TEMP/play-aab-verifier-classes"
+          mkdir -m 0700 "$classes"
+          javac -d "$classes" "$verifier/VerifyPlayAabSignature.java"
+          mapfile -t coordinates < "$RUNNER_TEMP/signed-candidate-coordinates"
+          test "${#coordinates[@]}" = 3
+          java -cp "$classes" VerifyPlayAabSignature \
+            "$root/${coordinates[0]}" "${coordinates[1]}" "$root/${coordinates[2]}"
+      - name: Retain only the independently verified signed candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: play-conformance-signed-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/play-conformance-signed/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

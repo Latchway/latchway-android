@@ -229,13 +229,16 @@ and credential redaction.
 
 Real Play Integrity success cannot be simulated. Configure the non-secret
 Gradle properties described in [Physical Play Integrity release evidence](docs/real-device-conformance.md),
-supply a real Firebase app configuration and signed-in test user, install the
-exact signed application from a Google Play track, and run the protected gate:
+supply a run-bound identity JWT from the configured provider whose exact
+digest is atomically consumed once by the gateway identity boundary, install
+the exact signed application from a Google Play track, and
+run the protected gate:
 
 ```properties
-latchway.gatewayUrl=https://gateway.example.com/
+latchway.gatewayUrl=https://gateway.example.com
 latchway.applicationId=app_01J00000000000000000000000
 latchway.environment=production
+latchway.identityProvider=firebase
 latchway.feature=assistant
 latchway.model=assistant-default
 latchway.cloudProjectNumber=123456789012
@@ -247,11 +250,23 @@ latchway.requireLicensed=true
 the Admin API. It is not your Android package name or a user-chosen slug.
 
 Keep signing keys, credentials, and local property files out of source control;
-manage the app's public Firebase configuration under its normal repository
-policy. A sideloaded debug APK is not valid release evidence. The conformance
-activity uses real Play evidence only and cancellation closes an in-flight
-streamed call. Replay/tamper results, the redacted JSON/JUnit contract, and all
-required immutable build/gateway pins are documented in the linked runbook.
+the physical sample consumes its external identity JWT once from an app-private
+stdin pipe and does not require or retain `FirebaseAuth.currentUser`. Use
+`scripts/stage-play-conformance-candidate.sh` to create a closed Release AAB
+staging set with exact source/core/contract/gateway pins. Unsigned output is an
+isolated-signing input and cannot be published. Its canonical pre-sign payload
+manifest binds every raw path, content hash, size, required version, ZIP flag,
+method, timestamp, creator/internal/external attributes, and allowlisted extra
+field.
+The protected candidate workflow signs it on a fresh no-checkout/no-Gradle host,
+then a separate no-secret host proves payload continuity, validates the raw ZIP
+structure, and requires exact signed-entry coverage plus the pinned upload
+certificate before retaining it. The upload-key certificate remains separate
+from the installed Play App Signing certificate.
+A sideloaded debug APK is not valid release evidence. The conformance activity
+uses real Play evidence only and cancellation closes an in-flight streamed call.
+Replay/tamper results, the redacted JSON/JUnit contract, and all required
+immutable build/gateway pins are documented in the linked runbook.
 
 See [Contributing](CONTRIBUTING.md) and [Agent Instructions](AGENTS.md).
 
