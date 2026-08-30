@@ -6,8 +6,8 @@ import java.net.URI
 import java.util.Locale
 
 public const val LATCHWAY_SDK_VERSION: String = "1.0.0"
-public const val LATCHWAY_CONTRACT_VERSION: String = "0.5.1"
-public const val LATCHWAY_PROTOCOL_VERSION: Int = 1
+public const val LATCHWAY_CONTRACT_VERSION: String = "1.0.0"
+public const val LATCHWAY_PROTOCOL_VERSION: Int = 2
 
 internal val ATTESTATION_PROVIDERS: Set<String> = setOf(
     "app_attest",
@@ -36,6 +36,7 @@ public data class CoreConfiguration(
     val identityProvider: String,
     val clientPlatform: LatchwayClientPlatform = LatchwayClientPlatform.ANDROID,
     val sdkVersion: String = LATCHWAY_SDK_VERSION,
+    val framework: LatchwayFramework? = null,
     val refreshLeewaySeconds: Long = 60,
     val maximumClockSkewSeconds: Long = 60,
     val allowInsecureLoopback: Boolean = false,
@@ -48,6 +49,16 @@ public data class CoreConfiguration(
         requireIdentifier(environment, "environment")
         requireIdentifier(identityProvider, "identityProvider")
         require(SEMVER.matches(sdkVersion)) { "sdkVersion must be semantic version syntax" }
+        framework?.let {
+            requireIdentifier(it.id, "framework.id")
+            require(SEMVER.matches(it.version)) { "framework.version must be semantic version syntax" }
+            require(
+                when (clientPlatform) {
+                    LatchwayClientPlatform.ANDROID -> it.id == "android-okhttp"
+                    LatchwayClientPlatform.REACT_NATIVE_ANDROID -> it.id == "react-native-fetch"
+                },
+            ) { "framework is not compatible with the selected Android SDK platform" }
+        }
         require(refreshLeewaySeconds in 5..300) { "refreshLeewaySeconds must be between 5 and 300" }
         require(maximumClockSkewSeconds in 0..300) { "maximumClockSkewSeconds must be between 0 and 300" }
     }
@@ -59,6 +70,12 @@ public data class CoreConfiguration(
         val SEMVER = Regex("^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")
     }
 }
+
+/** Optional first-party framework declaration sent as an exact header pair. */
+public data class LatchwayFramework(
+    val id: String,
+    val version: String,
+)
 
 public enum class LatchwayErrorCode(public val wireValue: String) {
     REQUEST_INVALID("request_invalid"),
@@ -79,6 +96,23 @@ public enum class LatchwayErrorCode(public val wireValue: String) {
     SESSION_REVOKED("session_revoked"),
     REFRESH_TOKEN_REUSED("refresh_token_reused"),
     INSTALLATION_REVOKED("installation_revoked"),
+    INSTALLATION_FAMILY_REVOKED("installation_family_revoked"),
+    INSTALLATION_FAMILY_NOT_FOUND("installation_family_not_found"),
+    COMPONENT_DEFINITION_NOT_FOUND("component_definition_not_found"),
+    COMPONENT_NOT_CONFIGURED("component_not_configured"),
+    COMPONENT_NOT_PROVISIONED("component_not_provisioned"),
+    COMPONENT_REVOKED("component_revoked"),
+    COMPONENT_KEY_INVALID("component_key_invalid"),
+    COMPONENT_KEY_REPLACED("component_key_replaced"),
+    COMPONENT_DELEGATION_EXPIRED("component_delegation_expired"),
+    COMPONENT_FEATURE_NOT_GRANTED("component_feature_not_granted"),
+    COMPONENT_PARENT_TRUST_EXPIRED("component_parent_trust_expired"),
+    COMPONENT_DIRECT_ATTESTATION_REQUIRED("component_direct_attestation_required"),
+    CONTAINING_APP_SETUP_REQUIRED("containing_app_setup_required"),
+    FRAMEWORK_INTEGRATION_UNSUPPORTED("framework_integration_unsupported"),
+    FRAMEWORK_VERSION_UNSUPPORTED("framework_version_unsupported"),
+    TRANSPORT_DESTINATION_NOT_ALLOWED("transport_destination_not_allowed"),
+    TRANSPORT_REQUEST_NOT_REPLAYABLE("transport_request_not_replayable"),
     FEATURE_NOT_FOUND("feature_not_found"),
     FEATURE_NOT_ALLOWED("feature_not_allowed"),
     MODEL_NOT_ALLOWED("model_not_allowed"),
@@ -114,6 +148,15 @@ public enum class LatchwayErrorCode(public val wireValue: String) {
     }
 }
 
+public enum class LatchwayRecoveryAction {
+    RETRY_LATER,
+    REAUTHENTICATE_USER,
+    OPEN_CONTAINING_APP,
+    REPROVISION_CLIENT,
+    CONTACT_ADMINISTRATOR,
+    NONE,
+}
+
 public class LatchwayException(
     public val code: LatchwayErrorCode,
     requestId: String? = null,
@@ -125,6 +168,15 @@ public class LatchwayException(
     public val requestId: String? = sanitizeRequestId(requestId)
     private var canonicalOperationId: String? = null
     public val operationId: String? get() = canonicalOperationId
+    public val recoveryAction: LatchwayRecoveryAction = code.recoveryAction()
+    public val containingAppCanResolve: Boolean = recoveryAction in setOf(
+        LatchwayRecoveryAction.OPEN_CONTAINING_APP,
+        LatchwayRecoveryAction.REPROVISION_CLIENT,
+    )
+    public val userAuthenticationRequired: Boolean =
+        recoveryAction == LatchwayRecoveryAction.REAUTHENTICATE_USER
+    public val retryingImmediatelyUseful: Boolean =
+        retryable && recoveryAction == LatchwayRecoveryAction.RETRY_LATER
 
     override fun toString(): String = buildString {
         append("LatchwayException(code=")
@@ -138,6 +190,44 @@ public class LatchwayException(
     internal fun attachOperationId(value: String?): LatchwayException = apply {
         canonicalOperationId = sanitizeOperationId(value)
     }
+}
+
+private fun LatchwayErrorCode.recoveryAction(): LatchwayRecoveryAction = when (this) {
+    LatchwayErrorCode.IDENTITY_TOKEN_MISSING,
+    LatchwayErrorCode.IDENTITY_TOKEN_INVALID,
+    LatchwayErrorCode.IDENTITY_TOKEN_EXPIRED,
+    LatchwayErrorCode.IDENTITY_REAUTHENTICATION_REQUIRED ->
+        LatchwayRecoveryAction.REAUTHENTICATE_USER
+    LatchwayErrorCode.COMPONENT_NOT_PROVISIONED,
+    LatchwayErrorCode.COMPONENT_DELEGATION_EXPIRED,
+    LatchwayErrorCode.COMPONENT_PARENT_TRUST_EXPIRED,
+    LatchwayErrorCode.COMPONENT_DIRECT_ATTESTATION_REQUIRED,
+    LatchwayErrorCode.CONTAINING_APP_SETUP_REQUIRED ->
+        LatchwayRecoveryAction.OPEN_CONTAINING_APP
+    LatchwayErrorCode.COMPONENT_KEY_INVALID,
+    LatchwayErrorCode.COMPONENT_KEY_REPLACED,
+    LatchwayErrorCode.INSTALLATION_FAMILY_NOT_FOUND,
+    LatchwayErrorCode.KEY_UNAVAILABLE ->
+        LatchwayRecoveryAction.REPROVISION_CLIENT
+    LatchwayErrorCode.COMPONENT_DEFINITION_NOT_FOUND,
+    LatchwayErrorCode.COMPONENT_NOT_CONFIGURED,
+    LatchwayErrorCode.COMPONENT_FEATURE_NOT_GRANTED,
+    LatchwayErrorCode.INSTALLATION_REVOKED,
+    LatchwayErrorCode.INSTALLATION_FAMILY_REVOKED,
+    LatchwayErrorCode.COMPONENT_REVOKED,
+    LatchwayErrorCode.PERMISSION_DENIED,
+    LatchwayErrorCode.FEATURE_NOT_ALLOWED,
+    LatchwayErrorCode.FRAMEWORK_INTEGRATION_UNSUPPORTED,
+    LatchwayErrorCode.FRAMEWORK_VERSION_UNSUPPORTED ->
+        LatchwayRecoveryAction.CONTACT_ADMINISTRATOR
+    LatchwayErrorCode.NETWORK_UNAVAILABLE,
+    LatchwayErrorCode.SERVER_NOT_READY,
+    LatchwayErrorCode.RATE_LIMITED,
+    LatchwayErrorCode.UPSTREAM_UNAVAILABLE,
+    LatchwayErrorCode.UPSTREAM_TIMEOUT,
+    LatchwayErrorCode.OPERATION_INDETERMINATE ->
+        LatchwayRecoveryAction.RETRY_LATER
+    else -> LatchwayRecoveryAction.NONE
 }
 
 public enum class AttestationMode {
@@ -293,6 +383,29 @@ public class LatchwayCoreClient internal constructor(
 
     public suspend fun quota(feature: String): LatchwayQuotaSnapshot = coordinator.quota(feature)
     public suspend fun revokeCurrentInstallation(): Unit = coordinator.revokeCurrentInstallation()
+    public suspend fun revokeCurrentInstallationFamily(): Unit = coordinator.revokeCurrentInstallationFamily()
+    public suspend fun revokeComponent(componentId: String): Unit = coordinator.revokeComponent(componentId)
+    public suspend fun provisionComponent(
+        definitionId: String,
+        requestedFeatures: Set<String>,
+        signer: InstallationSigner,
+        stateStore: ComponentSessionStateStore,
+    ): LatchwayComponentClient = coordinator.provisionComponentClient(
+        definitionId = definitionId,
+        requestedFeatures = requestedFeatures,
+        signer = signer,
+        stateStore = stateStore,
+    )
+
+    public suspend fun openComponent(
+        definitionId: String,
+        signer: InstallationSigner,
+        stateStore: ComponentSessionStateStore,
+    ): LatchwayComponentClient = coordinator.openComponentClient(
+        definitionId = definitionId,
+        signer = signer,
+        stateStore = stateStore,
+    )
     /** Applies a trusted server `installation_revoked` result and destroys local installation state. */
     public suspend fun markCurrentInstallationRevoked(): Unit = coordinator.markCurrentInstallationRevoked()
     public suspend fun diagnostics(): LatchwayDiagnostics = coordinator.diagnostics()

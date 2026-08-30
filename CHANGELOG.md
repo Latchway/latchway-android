@@ -7,12 +7,35 @@ Versioning once package publication begins.
 
 ## [Unreleased]
 
+### Added
+
+- Installation Family and configured client-component APIs with independent
+  Android Keystore P-256 keys, encrypted refresh chains, delegated feature
+  scope, child-only revocation, family-wide local key retirement, and redacted
+  component diagnostics.
+- Contract-owned framework metadata for the pinned OkHttp integration and
+  exact route-policy tests for standard and restricted opaque data paths.
+
+### Changed
+
+- Synchronized runtime constants, canonical fixtures, Installation Family and
+  Client Component operations, and framework metadata with draft core contract
+  `1.0.0` at current wire protocol `2`. The gateway's wire protocol `1`
+  compatibility remains a legacy server behavior and is not emitted by this
+  SDK candidate.
+
+### Security
+
+- The OkHttp network interceptor now issues a fresh DPoP proof for every
+  permitted attempt, rejects indeterminate internal connection replay, and
+  rejects same-origin requests outside the allowed Latchway data-plane paths,
+  including encoded opaque-path traversal.
+
 ## [1.0.0] - 2026-08-29
 
 ### Changed
 
-- Synchronized the SDK with released core contract checkpoint `0.5.1` while
-  retaining wire protocol `1`; compatibility is declared for server `1.0.0`
+- Established the initial SDK release baseline; compatibility is declared for server `1.0.0`
   through the tested `1.0.x` series. The server-owned trusted input-accounting contract
   adds no client wire fields, and indeterminate-operation errors preserve their
   required operation ID.

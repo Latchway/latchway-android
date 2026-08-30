@@ -51,6 +51,7 @@ internal class SessionCoordinator(
 
     suspend fun authorize(method: String, uri: URI, feature: String, nonce: String?): AuthorizedHeaders {
         requireIdentifier(feature, "feature")
+        requireGatewayDestination(configuration.baseUrl, uri)
         val state = currentSession(forceRefresh = false)
         val requestId = newRequestId()
         val proof = proofFactory.create(
@@ -89,6 +90,88 @@ internal class SessionCoordinator(
             return
         }
         throw problem(response)
+    }
+
+    suspend fun revokeCurrentInstallationFamily() {
+        val response = executeProtected("DELETE", "/client/v1/installation-families/current")
+        if (response.statusCode == 204) {
+            cleanupRevokedInstallation()
+            return
+        }
+        throw problem(response)
+    }
+
+    suspend fun revokeComponent(componentId: String) {
+        require(COMPONENT_ID.matches(componentId)) { "componentId is not canonical" }
+        val response = executeProtected(
+            "DELETE",
+            "/client/v1/installation-families/current/components/$componentId",
+        )
+        requireSuccess(response, setOf(204))
+    }
+
+    suspend fun provisionComponentClient(
+        definitionId: String,
+        requestedFeatures: Set<String>,
+        signer: InstallationSigner,
+        stateStore: ComponentSessionStateStore,
+    ): LatchwayComponentClient {
+        requireIdentifier(definitionId, "definitionId")
+        require(requestedFeatures.isNotEmpty() && requestedFeatures.size <= 256) {
+            "requestedFeatures must contain between 1 and 256 unique features"
+        }
+        requestedFeatures.forEach { requireIdentifier(it, "requestedFeatures") }
+        val features = requestedFeatures.toList().sorted()
+        val body = JSONObject()
+            .put("component_definition_id", definitionId)
+            .put("public_jwk", JSONObject()
+                .put("kty", signer.publicJwk.kty)
+                .put("crv", signer.publicJwk.crv)
+                .put("x", signer.publicJwk.x)
+                .put("y", signer.publicJwk.y))
+            .put("requested_features", JSONArray(features))
+            .put("client_metadata", JSONObject()
+                .put("app_version", installationMetadata.appVersion)
+                .put("sdk_version", configuration.sdkVersion))
+        val response = executeProtected(
+            method = "POST",
+            path = "/client/v1/installation-families/current/components",
+            body = body,
+        )
+        requireSuccess(response, setOf(201))
+        val provisioning = parseComponentProvisioning(
+            encoded = response.utf8Body(),
+            definitionId = definitionId,
+            publicJwk = signer.publicJwk,
+            requestedFeatures = requestedFeatures,
+            nowEpochSeconds = clock.epochSeconds(),
+        )
+        return ComponentSessionCoordinator(
+            configuration = configuration,
+            rootCoordinator = this,
+            definitionId = definitionId,
+            signer = signer,
+            stateStore = stateStore,
+            transport = transport,
+            clock = clock,
+        ).provision(provisioning)
+    }
+
+    suspend fun openComponentClient(
+        definitionId: String,
+        signer: InstallationSigner,
+        stateStore: ComponentSessionStateStore,
+    ): LatchwayComponentClient {
+        requireIdentifier(definitionId, "definitionId")
+        return ComponentSessionCoordinator(
+            configuration = configuration,
+            rootCoordinator = this,
+            definitionId = definitionId,
+            signer = signer,
+            stateStore = stateStore,
+            transport = transport,
+            clock = clock,
+        ).open(definitionId)
     }
 
     suspend fun markCurrentInstallationRevoked() {
@@ -152,7 +235,7 @@ internal class SessionCoordinator(
                 }.also { inFlightSession = it }
             }
         } catch (error: LatchwayException) {
-            if (error.code == LatchwayErrorCode.INSTALLATION_REVOKED) cleanupRevokedInstallation()
+            if (error.code.isRootTerminal()) cleanupRevokedInstallation()
             throw error
         }
         return try {
@@ -160,7 +243,7 @@ internal class SessionCoordinator(
             ensureInstallationActive()
             result
         } catch (error: LatchwayException) {
-            if (error.code == LatchwayErrorCode.INSTALLATION_REVOKED) {
+            if (error.code.isRootTerminal()) {
                 cleanupRevokedInstallation()
             }
             throw error
@@ -457,9 +540,20 @@ internal class SessionCoordinator(
         }
     }
 
-    private suspend fun executeProtected(method: String, path: String): LatchwayTransportResponse {
+    private suspend fun executeProtected(
+        method: String,
+        path: String,
+        body: JSONObject? = null,
+    ): LatchwayTransportResponse {
         val state = currentSession(forceRefresh = false)
         val uri = configuration.endpoint(path)
+        val bodyBytes = body?.toString()?.toByteArray(StandardCharsets.UTF_8)
+        if (bodyBytes != null && bodyBytes.size > MAX_CONTROL_REQUEST_BYTES) {
+            throw LatchwayException(
+                code = LatchwayErrorCode.REQUEST_INVALID,
+                safeMessage = "The Latchway control request exceeded the safe size limit",
+            )
+        }
         var nonce: String? = null
         repeat(2) { attempt ->
             ensureInstallationActive()
@@ -469,11 +563,11 @@ internal class SessionCoordinator(
                 LatchwayTransportRequest(
                     method = method,
                     uri = uri,
-                    headers = protocolHeaders(newRequestId()) + mapOf(
+                    headers = protocolHeaders(configuration, newRequestId()) + mapOf(
                         "Authorization" to "DPoP ${state.accessToken.reveal()}",
                         "DPoP" to proof.reveal(),
-                    ),
-                    body = null,
+                    ) + if (bodyBytes != null) mapOf("Content-Type" to "application/json") else emptyMap(),
+                    body = bodyBytes,
                 ),
             )
             if (attempt == 0 && isNonceChallenge(response)) {
@@ -482,7 +576,7 @@ internal class SessionCoordinator(
                 if (response.statusCode >= 400) {
                     runCatching { problem(response) }.getOrNull()?.code?.let { code ->
                         when {
-                            code == LatchwayErrorCode.INSTALLATION_REVOKED -> cleanupRevokedInstallation()
+                            code.isRootTerminal() -> cleanupRevokedInstallation()
                             code.clearsSession() -> clearPersistedSession(state)
                         }
                     }
@@ -515,7 +609,7 @@ internal class SessionCoordinator(
                 LatchwayTransportRequest(
                     method = method,
                     uri = uri,
-                    headers = protocolHeaders(newRequestId()) + mapOf(
+                    headers = protocolHeaders(configuration, newRequestId()) + mapOf(
                         "Content-Type" to "application/json",
                         "DPoP" to proof.reveal(),
                     ),
@@ -531,24 +625,33 @@ internal class SessionCoordinator(
         throw responseInvalid("DPoP nonce negotiation did not complete")
     }
 
-    private fun protocolHeaders(requestId: String): Map<String, String> = mapOf(
+}
+
+internal fun protocolHeaders(configuration: CoreConfiguration, requestId: String): Map<String, String> = buildMap {
+    putAll(mapOf(
         "Accept" to "application/json, application/problem+json",
         "X-Latchway-Protocol-Version" to LATCHWAY_PROTOCOL_VERSION.toString(),
         "X-Latchway-SDK" to configuration.clientPlatform.sdkHeaderValue,
         "X-Latchway-SDK-Version" to configuration.sdkVersion,
         "X-Latchway-Request-ID" to requestId,
-    )
-
-    private fun isNonceChallenge(response: LatchwayTransportResponse): Boolean =
-        response.statusCode == 401 && response.header("DPoP-Nonce") != null &&
-            runCatching { problem(response).code == LatchwayErrorCode.DPOP_NONCE_REQUIRED }.getOrDefault(false)
-
-    private fun validNonce(value: String?): String {
-        if (value == null || value.length !in 16..512 || value.any { it.isISOControl() }) {
-            throw responseInvalid("The server returned an invalid DPoP nonce")
-        }
-        return value
+    ))
+    configuration.framework?.let {
+        put("X-Latchway-Framework", it.id)
+        put("X-Latchway-Framework-Version", it.version)
     }
+}
+
+private val COMPONENT_ID = Regex("^cmp_[A-Za-z0-9_-]{16,128}$")
+
+private fun SessionCoordinator.isNonceChallenge(response: LatchwayTransportResponse): Boolean =
+    response.statusCode == 401 && response.header("DPoP-Nonce") != null &&
+        runCatching { problem(response).code == LatchwayErrorCode.DPOP_NONCE_REQUIRED }.getOrDefault(false)
+
+private fun SessionCoordinator.validNonce(value: String?): String {
+    if (value == null || value.length !in 16..512 || value.any { it.isISOControl() }) {
+        throw responseInvalid("The server returned an invalid DPoP nonce")
+    }
+    return value
 }
 
 private const val MAX_CONTROL_REQUEST_BYTES = 512 * 1024
@@ -571,14 +674,45 @@ private fun LatchwayErrorCode.clearsSession(): Boolean = when (this) {
     else -> false
 }
 
+private fun LatchwayErrorCode.isRootTerminal(): Boolean =
+    this == LatchwayErrorCode.INSTALLATION_REVOKED ||
+        this == LatchwayErrorCode.INSTALLATION_FAMILY_REVOKED ||
+        this == LatchwayErrorCode.INSTALLATION_FAMILY_NOT_FOUND
+
 private fun installationRevokedError(): LatchwayException = LatchwayException(
     code = LatchwayErrorCode.INSTALLATION_REVOKED,
     safeMessage = "This client installation has been revoked",
 )
 
-private fun newRequestId(): String = "android:${UUID.randomUUID()}"
+internal fun newRequestId(): String = "android:${UUID.randomUUID()}"
 
-private fun coordinationOrigin(uri: URI): String {
+internal fun requireGatewayDestination(baseUrl: URI, target: URI) {
+    val baseScheme = baseUrl.scheme?.lowercase(Locale.US)
+    val targetScheme = target.scheme?.lowercase(Locale.US)
+    val baseHost = baseUrl.host?.lowercase(Locale.US)
+    val targetHost = target.host?.lowercase(Locale.US)
+    val basePath = baseUrl.rawPath?.ifEmpty { "/" } ?: "/"
+    val targetPath = target.rawPath?.ifEmpty { "/" } ?: "/"
+    val allowed = target.isAbsolute && target.userInfo == null && target.fragment == null &&
+        baseScheme == targetScheme && baseHost == targetHost &&
+        effectivePort(baseUrl, baseScheme) == effectivePort(target, targetScheme) &&
+        targetPath.startsWith(basePath)
+    if (!allowed) {
+        throw LatchwayException(
+            code = LatchwayErrorCode.TRANSPORT_DESTINATION_NOT_ALLOWED,
+            safeMessage = "Latchway authorization is limited to the configured gateway destination",
+        )
+    }
+}
+
+private fun effectivePort(uri: URI, scheme: String?): Int = when {
+    uri.port >= 0 -> uri.port
+    scheme == "https" -> 443
+    scheme == "http" -> 80
+    else -> -1
+}
+
+internal fun coordinationOrigin(uri: URI): String {
     val scheme = uri.scheme.lowercase(Locale.US)
     val host = uri.host.lowercase(Locale.US)
     val port = when {
@@ -586,17 +720,18 @@ private fun coordinationOrigin(uri: URI): String {
         scheme == "http" -> 80
         else -> 443
     }
-    return "$scheme://$host:$port"
+    val path = uri.rawPath?.ifEmpty { "/" } ?: "/"
+    return "$scheme://$host:$port$path"
 }
 
-private fun requireSuccess(
+internal fun requireSuccess(
     response: LatchwayTransportResponse,
     accepted: Set<Int> = setOf(200),
 ) {
     if (response.statusCode !in accepted) throw problem(response)
 }
 
-private fun problem(response: LatchwayTransportResponse): LatchwayException {
+internal fun problem(response: LatchwayTransportResponse): LatchwayException {
     return try {
         require(isProblemMediaType(response.header("Content-Type")))
         val json = JSONObject(response.utf8Body())
@@ -615,6 +750,10 @@ private fun problem(response: LatchwayTransportResponse): LatchwayException {
         val retryable = json.get("retryable").also { require(it is Boolean) } as Boolean
         when (code) {
             LatchwayErrorCode.INSTALLATION_REVOKED -> {
+                require(response.statusCode == 403)
+                require(!retryable)
+            }
+            LatchwayErrorCode.INSTALLATION_FAMILY_REVOKED -> {
                 require(response.statusCode == 403)
                 require(!retryable)
             }
@@ -712,8 +851,10 @@ private fun parseQuota(encoded: String): LatchwayQuotaSnapshot = try {
             used = optionalNonNegativeLong(value, "used"),
             reserved = optionalNonNegativeLong(value, "reserved"),
             remaining = optionalNonNegativeLong(value, "remaining"),
-            resetsAt = value.optString("resets_at", null)?.takeIf { it.isNotBlank() }?.also {
-                parseRfc3339EpochSeconds(it)
+            resetsAt = if (value.has("resets_at") && !value.isNull("resets_at")) {
+                boundedRfc3339(value, "resets_at")
+            } else {
+                null
             },
             hard = value.getBoolean("hard"),
         )
@@ -861,13 +1002,13 @@ private fun JSONArray.toSafeList(depth: Int): List<Any?> {
     }
 }
 
-private fun responseInvalid(message: String, cause: Throwable? = null): LatchwayException = LatchwayException(
+internal fun responseInvalid(message: String, cause: Throwable? = null): LatchwayException = LatchwayException(
     code = LatchwayErrorCode.RESPONSE_INVALID,
     safeMessage = message,
     cause = cause,
 )
 
-private fun parseRfc3339EpochSeconds(value: String): Long {
+internal fun parseRfc3339EpochSeconds(value: String): Long {
     val match = RFC3339.matchEntire(value) ?: throw IllegalArgumentException("Invalid RFC 3339 timestamp")
     val zone = match.groupValues[7]
     val offsetMillis = if (zone == "Z") {

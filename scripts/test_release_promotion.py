@@ -9,6 +9,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -147,7 +148,7 @@ class PromotionVerifierTests(unittest.TestCase):
                 "version": "1.0.0",
                 "status": "released",
                 "released_at": "2026-08-29T10:00:00Z",
-                "wire_protocol": 1,
+                "wire_protocol": 2,
                 "bundle_file_name": "latchway-contract-1.0.0.tar.gz",
                 "bundle_sha256": "b" * 64,
                 "core_release": CORE_TAG,
@@ -421,7 +422,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         publication_markers = {
             "javascript": 'npm publish "$RELEASE_TARBALL"',
             "ios": "pod trunk push Latchway.podspec",
-            "android": "scripts/publish-central.sh",
+            "android": "$portal_api/upload?name=$deployment_name&publishingType=USER_MANAGED",
             "react_native": "node scripts/publish-or-verify.mjs",
         }
         self.assertLess(tag, workflow.index(publication_markers[REPOSITORY_ID]))
@@ -431,25 +432,44 @@ class ReleaseWorkflowTests(unittest.TestCase):
         elif REPOSITORY_ID in ("ios", "android"):
             self.assertIn("needs: promote", workflow)
 
-    def test_release_remote_tag_reads_use_ephemeral_same_repository_auth(self) -> None:
+    def test_promotion_credentials_never_share_a_runner_with_candidate_code(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-        expected_steps = {"javascript": 1, "ios": 2, "android": 2, "react_native": 3}
-        expected_calls = {"javascript": 2, "ios": 3, "android": 3, "react_native": 4}
-        auth_steps = expected_steps[REPOSITORY_ID]
-        auth_calls = expected_calls[REPOSITORY_ID]
-        self.assertEqual(workflow.count("GIT_TAG_READ_TOKEN: ${{ github.token }}"), auth_steps)
-        self.assertEqual(workflow.count("git_with_auth() {"), auth_steps)
-        self.assertEqual(workflow.count('GIT_ASKPASS="$git_askpass"'), auth_steps)
-        self.assertEqual(workflow.count("GIT_TERMINAL_PROMPT=0"), auth_steps)
-        self.assertEqual(workflow.count('git -c credential.helper= "$@"'), auth_steps)
-        self.assertEqual(workflow.count('chmod 700 "$git_askpass"'), auth_steps)
-        self.assertEqual(workflow.count('trap \'rm -f -- "$git_askpass"\' EXIT'), auth_steps)
-        self.assertEqual(workflow.count("git_with_auth ls-remote"), 1)
-        self.assertEqual(workflow.count("git_with_auth fetch --force origin"), auth_calls - 1)
-        self.assertNotIn("git ls-remote", workflow)
-        self.assertNotIn("git fetch --force origin", workflow)
-        self.assertNotIn("https://x-access-token:", workflow)
-        self.assertNotIn("git config --global", workflow)
+        authorization = workflow.split("\n  authorize-promotion:\n", 1)[1].split(
+            "\n  verify-promotion:\n", 1
+        )[0]
+        verification = workflow.split("\n  verify-promotion:\n", 1)[1].split(
+            "\n  promote:\n", 1
+        )[0]
+        following_job = {
+            "javascript": "verify",
+            "react_native": "locked-sources",
+            "ios": "publish",
+            "android": "authorize-release",
+        }[REPOSITORY_ID]
+        tag_mutation = workflow.split("\n  promote:\n", 1)[1].split(
+            f"\n  {following_job}:\n", 1
+        )[0]
+
+        self.assertNotIn("actions/checkout", authorization)
+        self.assertNotIn("scripts/", authorization)
+        self.assertNotIn("python3 ", authorization)
+        self.assertNotIn("node ", authorization)
+        self.assertIn("LATCHWAY_SIBLING_REPOSITORIES_READ_TOKEN", authorization)
+        self.assertIn("gh attestation verify", authorization)
+
+        self.assertIn("actions/checkout", verification)
+        self.assertIn("python3 scripts/verify-release-promotion.py", verification)
+        self.assertNotIn("secrets.", verification)
+        self.assertNotIn("GH_TOKEN:", verification)
+
+        self.assertNotIn("actions/checkout", tag_mutation)
+        self.assertNotIn("scripts/", tag_mutation)
+        self.assertNotIn("python3 ", tag_mutation)
+        self.assertNotIn("node ", tag_mutation)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", tag_mutation)
+        self.assertIn("gh api", tag_mutation)
+        self.assertNotIn("GIT_TAG_READ_TOKEN", workflow)
+        self.assertNotIn("git_with_auth()", workflow)
 
     def test_react_native_publication_still_waits_for_all_dependency_releases(self) -> None:
         if REPOSITORY_ID != "react_native":
@@ -460,37 +480,56 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertLess(dependency, publish)
         self.assertIn("needs: [promote, verify, android, ios]", workflow)
 
-    def test_android_release_is_resumable_without_overwriting_public_state(self) -> None:
+    def test_android_release_is_resumable_without_exposing_github_credentials(self) -> None:
         if REPOSITORY_ID != "android":
             self.skipTest("Android-only release recovery")
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-        draft = workflow.index("Create or resume the fixed-asset GitHub draft")
-        publish = workflow.index("Upload once or resume the exact Portal deployment")
-        durable_id = workflow.index("Durably attach the exact Portal deployment ID before waiting")
-        wait = workflow.index("Wait on only the recorded Portal deployment")
-        public_verification = workflow.index("Verify the immutable public artifacts")
-        checksum_manifest = workflow.index("Seal the complete fixed-asset checksum manifest")
-        final = workflow.index("Attach every fixed asset, publish, and require immutability")
-        self.assertLess(draft, publish)
-        self.assertLess(publish, durable_id)
-        self.assertLess(durable_id, wait)
-        self.assertLess(wait, public_verification)
+        tag_binding = workflow.index("Bind the exact promoted annotated tag without credentials")
+        unsigned_transfer = workflow.index("Transfer the unsigned candidate to isolated signing")
+        portal_bundle = workflow.index("Sign only the fixed Maven payload set with the pinned key")
+        intent = workflow.index("Seal the exact signed Portal inputs without private material")
+        signed_transfer = workflow.index("Transfer signed bytes to the no-checkout Portal publisher")
+        publish = workflow.index("Upload once or adopt and publish the exact Portal deployment")
+        public_verification = workflow.index(
+            "Verify immutable public artifacts and durable deployment binding"
+        )
+        checksum_manifest = workflow.index(
+            "Seal and stage the complete fixed-asset checksum manifest"
+        )
+        transfer = workflow.index("Transfer exact Android assets to immutable GitHub publication")
+        closure = workflow.index("Validate exact Android asset closure before OIDC attestation")
+        attestation = workflow.index(
+            "Attest exact Maven inputs and retained publication evidence without candidate checkout"
+        )
+        final = workflow.index("Reconcile, publish, and verify immutable release with fixed API calls")
+        self.assertLess(tag_binding, unsigned_transfer)
+        self.assertLess(unsigned_transfer, portal_bundle)
+        self.assertLess(portal_bundle, intent)
+        self.assertLess(intent, signed_transfer)
+        self.assertLess(signed_transfer, publish)
+        self.assertLess(publish, public_verification)
         self.assertLess(public_verification, checksum_manifest)
-        self.assertLess(checksum_manifest, final)
-        self.assertLess(public_verification, final)
+        self.assertLess(checksum_manifest, transfer)
+        self.assertLess(transfer, final)
+        self.assertLess(closure, attestation)
+        self.assertLess(attestation, final)
         self.assertIn("LATCHWAY_CENTRAL_EXPECTED_REPOSITORY", workflow)
         self.assertIn("maven-central-release-evidence.json", workflow)
         self.assertIn("maven-central-deployment.json", workflow)
         self.assertIn("maven-central-deployment-status.json", workflow)
-        self.assertIn("LATCHWAY_CENTRAL_INTENT_FRESH", workflow)
-        self.assertIn("LATCHWAY_CENTRAL_PUBLISH_AFTER_VALIDATION", workflow)
-        self.assertIn("--guard-asset maven-central-upload-intent.json", workflow)
         self.assertIn("LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN", workflow)
         self.assertIn('"repos/$GITHUB_REPOSITORY/immutable-releases"', workflow)
-        automatic_attestation = workflow.index("Verify GitHub automatic release and per-asset attestations")
-        self.assertLess(final, automatic_attestation)
         self.assertIn('gh release verify "$RELEASE_TAG"', workflow)
         self.assertIn('gh release verify-asset "$RELEASE_TAG" "$asset"', workflow)
+        self.assertNotIn("python3 scripts/reconcile-github-release.py", workflow)
+        self.assertNotIn("scripts/verify-github-release-attestation.py", workflow)
+        trusted = workflow.split("\n  github-release:\n", 1)[1]
+        self.assertNotIn("actions/checkout", trusted)
+        self.assertNotIn("scripts/", trusted)
+        self.assertNotIn("python3 ", trusted)
+        self.assertNotIn("node ", trusted)
+        self.assertIn("RELEASE_TOKEN:", trusted)
+        self.assertIn("needs: [promote, verify-publication, github-release-policy]", trusted)
         for asset in (
             "maven-repository.zip",
             "central-portal.zip",
@@ -502,25 +541,116 @@ class ReleaseWorkflowTests(unittest.TestCase):
             "maven-central-deployment-status.json",
             "maven-central-release-evidence.json",
         ):
-            self.assertIn(asset, workflow[automatic_attestation:])
-        self.assertIn("--expected-commit \"$RELEASE_COMMIT\"", workflow)
-        self.assertIn("--expected-tag-message-file \"$RUNNER_TEMP/sdk-tag-message.txt\"", workflow)
-        self.assertIn("scripts/verify-github-release-attestation.py", workflow)
-        reconciler = (ROOT / "scripts/reconcile-github-release.py").read_text(encoding="utf-8")
-        version_gate = reconciler.index('with_name("require-gh-version.py")')
-        first_release_operation = reconciler.index("expected_tag_message = load_tag_message")
-        self.assertLess(version_gate, first_release_operation)
-        self.assertIn("GitHub CLI does not satisfy the release security baseline", reconciler)
-        portal_bundle = workflow.index("Build the pre-reviewed signed Central Portal bundle")
-        intent = workflow.index("Create the single-use Maven Central upload intent")
-        self.assertLess(portal_bundle, intent)
-        upload_step = workflow[workflow.index("Upload once or resume the exact Portal deployment"):durable_id]
-        self.assertNotIn("LATCHWAY_SIGNING_KEY", upload_step)
-        self.assertNotIn("LATCHWAY_SIGNING_PASSWORD", upload_step)
+            self.assertIn(asset, trusted)
+        candidate = workflow.split("\n  package:\n", 1)[1].split(
+            "\n  sign-central:\n", 1
+        )[0]
+        signing = workflow.split("\n  sign-central:\n", 1)[1].split(
+            "\n  publish-central:\n", 1
+        )[0]
+        publisher = workflow.split("\n  publish-central:\n", 1)[1].split(
+            "\n  verify-publication:\n", 1
+        )[0]
+        verifier = workflow.split("\n  verify-publication:\n", 1)[1].split(
+            "\n  github-release-policy:\n", 1
+        )[0]
+        administration = workflow.split("\n  authorize-release:\n", 1)[1].split(
+            "\n  package:\n", 1
+        )[0]
+        self.assertNotIn("actions/checkout", administration)
+        self.assertNotIn("scripts/", administration)
+        self.assertNotIn("python3 ", administration)
+        self.assertNotIn("node ", administration)
+        self.assertNotIn("id-token: write", administration)
+        self.assertNotIn("attestations: write", administration)
+        self.assertIn("LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN", administration)
+        self.assertIn("repos/$GITHUB_REPOSITORY/immutable-releases", administration)
+        final_policy = workflow.split("\n  github-release-policy:\n", 1)[1].split(
+            "\n  github-release:\n", 1
+        )[0]
+        self.assertNotIn("actions/checkout", final_policy)
+        self.assertNotIn("scripts/", final_policy)
+        self.assertNotIn("python3 ", final_policy)
+        self.assertNotIn("node ", final_policy)
+        self.assertNotIn("id-token: write", final_policy)
+        self.assertNotIn("attestations: write", final_policy)
+        self.assertIn("LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN", final_policy)
+        self.assertIn("repos/$GITHUB_REPOSITORY/immutable-releases", final_policy)
+        self.assertIn("needs: [promote, verify-publication]", final_policy)
+        self.assertNotIn("LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN", trusted)
+        self.assertIn("actions/checkout", candidate)
+        self.assertIn("./gradlew", candidate)
+        self.assertNotIn("secrets.", candidate)
+        self.assertNotIn("LATCHWAY_SIGNING_KEY", candidate)
+        self.assertNotIn("LATCHWAY_MAVEN_CENTRAL_USERNAME", candidate)
+        self.assertNotIn("id-token: write", candidate)
+        self.assertNotIn("attestations: write", candidate)
+
+        self.assertIn("needs: [promote, package, authorize-release]", signing)
+        self.assertNotIn("actions/checkout", signing)
+        self.assertNotIn("scripts/", signing)
+        self.assertNotIn("./gradlew", signing)
+        self.assertNotIn("java ", signing)
+        self.assertIn("LATCHWAY_SIGNING_KEY", signing)
+        self.assertIn("LATCHWAY_SIGNING_PASSWORD", signing)
+        self.assertNotIn("LATCHWAY_MAVEN_CENTRAL_USERNAME", signing)
+        self.assertNotIn("LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN", signing)
+        self.assertNotIn("id-token: write", signing)
+        self.assertNotIn("attestations: write", signing)
+
+        self.assertNotIn("actions/checkout", publisher)
+        self.assertNotIn("scripts/", publisher)
+        self.assertNotIn("./gradlew", publisher)
+        self.assertNotIn("java ", publisher)
+        self.assertNotIn("unzip ", publisher)
+        self.assertNotIn("LATCHWAY_SIGNING_KEY", publisher)
+        self.assertNotIn("LATCHWAY_SIGNING_PASSWORD", publisher)
+        self.assertIn("LATCHWAY_MAVEN_CENTRAL_USERNAME", publisher)
+        self.assertIn("publishingType=USER_MANAGED", publisher)
+        self.assertIn("archive closed-set mismatch", publisher)
+        self.assertIn('find "$root" -mindepth 1 -print', signing)
+        self.assertIn('find "$root" -mindepth 1 -print', publisher)
+        self.assertNotIn("LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN", publisher)
+        self.assertNotIn("id-token: write", publisher)
+        self.assertNotIn("attestations: write", publisher)
+
+        self.assertIn("actions/checkout", verifier)
+        self.assertIn("scripts/verify-central-release.sh", verifier)
+        self.assertNotIn("secrets.", verifier)
+        self.assertNotIn("LATCHWAY_MAVEN_CENTRAL_USERNAME", verifier)
+        self.assertNotIn("LATCHWAY_SIGNING_KEY", verifier)
+        self.assertNotIn("id-token: write", verifier)
         self.assertIn("publishingType=USER_MANAGED", (ROOT / "scripts/publish-central.sh").read_text())
         self.assertNotIn("--clobber", workflow)
-        self.assertNotIn("gh release create", workflow)
+        self.assertIn('actual=("$asset_root"/*)', trusted)
+        self.assertIn('test "${#actual[@]}" = "${#expected[@]}"', trusted)
+        self.assertIn(
+            'cmp --silent "$RUNNER_TEMP/expected-assets.txt" "$RUNNER_TEMP/actual-assets.txt"',
+            trusted,
+        )
 
+
+
+    def test_oidc_permissions_are_confined_to_no_checkout_fixed_jobs(self) -> None:
+        workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        headers = list(re.finditer(r"(?m)^  ([a-z0-9_-]+):\n", workflow))
+        oidc_jobs: list[tuple[str, str]] = []
+        for index, header in enumerate(headers):
+            end = headers[index + 1].start() if index + 1 < len(headers) else len(workflow)
+            block = workflow[header.start():end]
+            if "id-token: write" in block or "attestations: write" in block:
+                oidc_jobs.append((header.group(1), block))
+
+        self.assertGreaterEqual(len(oidc_jobs), 1)
+        for job_name, block in oidc_jobs:
+            self.assertNotIn("actions/checkout", block, job_name)
+            self.assertNotIn("scripts/", block, job_name)
+            self.assertNotIn("working-directory:", block, job_name)
+            self.assertNotIn("python3 ", block, job_name)
+            self.assertNotIn("node ", block, job_name)
+            self.assertNotIn("./gradlew", block, job_name)
+            self.assertNotIn("LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN", block, job_name)
+            self.assertNotIn("secrets.", block, job_name)
 
 if __name__ == "__main__":
     unittest.main()

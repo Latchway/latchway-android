@@ -9,6 +9,7 @@ import android.database.Cursor
 import android.net.Uri
 import android.os.Build
 import dev.latchway.core.AndroidEncryptedSessionStateStore
+import dev.latchway.core.AndroidEncryptedComponentSessionStateStore
 import dev.latchway.core.AndroidKeystoreInstallationSigner
 import dev.latchway.core.AttestationProvider
 import dev.latchway.core.AuthorizedHeaders
@@ -19,14 +20,20 @@ import dev.latchway.core.InstallationMetadata
 import dev.latchway.core.KeyPolicy
 import dev.latchway.core.LATCHWAY_SDK_VERSION
 import dev.latchway.core.LATCHWAY_PROTOCOL_VERSION
+import dev.latchway.core.LatchwayComponentClient
 import dev.latchway.core.LatchwayClientPlatform
 import dev.latchway.core.LatchwayCoreClient
 import dev.latchway.core.LatchwayDiagnostics
 import dev.latchway.core.LatchwayErrorCode
 import dev.latchway.core.LatchwayException
+import dev.latchway.core.LatchwayFramework
 import dev.latchway.core.LatchwayQuotaSnapshot
 import dev.latchway.core.UnsupportedAttestationProvider
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.Authenticator
 import okhttp3.ConnectionPool
 import okhttp3.CookieJar
@@ -34,6 +41,7 @@ import okhttp3.Dispatcher
 import okhttp3.HttpUrl
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
+import okhttp3.OkHttp
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.Route
@@ -43,6 +51,12 @@ import java.lang.ref.WeakReference
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
+
+/** Runtime OkHttp semver emitted in the framework metadata header. */
+public val LATCHWAY_OKHTTP_FRAMEWORK_VERSION: String
+    get() = OkHttp.VERSION
 
 public data class LatchwayConfiguration(
     val baseUrl: HttpUrl,
@@ -55,6 +69,15 @@ public data class LatchwayConfiguration(
     val keyPolicy: KeyPolicy = KeyPolicy(),
     val allowInsecureLoopback: Boolean = false,
 ) {
+    /** Runtime-derived contract identity; callers cannot report an arbitrary adapter version. */
+    val framework: LatchwayFramework
+        get() = when (clientPlatform) {
+            LatchwayClientPlatform.ANDROID ->
+                LatchwayFramework("android-okhttp", LATCHWAY_OKHTTP_FRAMEWORK_VERSION)
+            LatchwayClientPlatform.REACT_NATIVE_ANDROID ->
+                LatchwayFramework("react-native-fetch", sdkVersion)
+        }
+
     init {
         CoreConfiguration(
             baseUrl = baseUrl.toUri(),
@@ -63,6 +86,7 @@ public data class LatchwayConfiguration(
             identityProvider = identityProvider,
             clientPlatform = clientPlatform,
             sdkVersion = sdkVersion,
+            framework = framework,
             allowInsecureLoopback = allowInsecureLoopback,
         )
         defaultFeature?.let(::validateFeature)
@@ -90,14 +114,22 @@ public class LatchwayClient(
     }
     private val core: LatchwayCoreClient by coreDelegate
 
-    public fun interceptor(): Interceptor = Interceptor { chain ->
+    public fun interceptor(): Interceptor = applicationInterceptor(defaultComponent = null)
+
+    /** Framework-transparent request-time authorization with one native component identity. */
+    public fun interceptor(component: LatchwayComponentClient): Interceptor =
+        applicationInterceptor(defaultComponent = component)
+
+    private fun applicationInterceptor(defaultComponent: LatchwayComponentClient?): Interceptor = Interceptor { chain ->
         val request = chain.request()
         if (!isGatewayOrigin(request.url)) return@Interceptor chain.proceed(request)
+        val component = defaultComponent ?: request.tag(LatchwayComponentClient::class.java)
         val feature = request.latchwayFeature()
-        val response = chain.proceed(runBlocking { authorizeInternal(request, feature, nonce = null) })
-        observeInstallationRevocation(response, ::isGatewayOrigin) {
-            runCatching { runBlocking { core.markCurrentInstallationRevoked() } }
-        }
+        requireAllowedDataPlaneRequest(request, feature)
+        val response = chain.proceed(
+            runBlocking { authorizeInternal(component, request, feature, nonce = null) },
+        )
+        applyTrustedTerminalResponse(response, component)
         response
     }
 
@@ -105,30 +137,69 @@ public class LatchwayClient(
      * Install as a network interceptor. It blocks caller provider credentials
      * before gateway dispatch and Latchway credentials on cross-origin redirects.
      */
-    public fun originGuard(): Interceptor = gatewayOriginGuard(configuration.baseUrl)
+    public fun originGuard(): Interceptor = Interceptor { chain ->
+        val request = chain.request()
+        if (!isGatewayOrigin(request.url)) {
+            if (request.hasLatchwayCredentials() || request.tag(AuthorizedHeaders::class.java) != null) {
+                throw LatchwayException(
+                    code = LatchwayErrorCode.TRANSPORT_DESTINATION_NOT_ALLOWED,
+                    safeMessage = "Latchway credentials cannot follow a redirect to another origin",
+                )
+            }
+            return@Interceptor chain.proceed(request)
+        }
+        val feature = request.latchwayFeature()
+        requireAllowedDataPlaneRequest(request, feature)
+        rejectUpstreamCredentials(request, authorizationWillBeReplaced = true)
+        claimNetworkAttempt(request)
+        // A network interceptor runs once per actual network attempt. Re-sign
+        // here so connection retries and same-origin follow-ups never reuse a
+        // DPoP proof created by the application interceptor.
+        val component = request.tag(LatchwayComponentClient::class.java)
+        val authorized = runBlocking {
+            authorizeInternal(component, request, feature, nonce = request.latchwayRetryNonce())
+        }
+        val outgoingBudget = checkNotNull(authorized.tag(LatchwayNetworkAttemptBudget::class.java))
+        check(outgoingBudget.claim()) { "A fresh network-attempt budget must be unclaimed" }
+        chain.proceed(
+            authorized.newBuilder()
+                .build(),
+        )
+    }
 
     public fun authenticator(): Authenticator = object : Authenticator {
         override fun authenticate(route: Route?, response: Response): Request? {
             if (!isGatewayOrigin(response.request.url)) return null
             val request = response.request
+            val component = request.tag(LatchwayComponentClient::class.java)
             val decision = authenticationDecision(response)
             if (decision.action == AuthenticationAction.NONE) return null
             return when (decision.action) {
                 AuthenticationAction.NONCE -> {
                     val feature = runCatching { request.latchwayFeature() }.getOrNull() ?: return null
                     val nonce = decision.nonce ?: return null
-                    runCatching { runBlocking { authorizeInternal(request, feature, nonce) } }.getOrNull()
+                    runCatching {
+                        runBlocking { authorizeInternal(component, request, feature, nonce) }
+                    }.getOrNull()
                 }
                 AuthenticationAction.REFRESH -> runCatching {
                     val feature = request.latchwayFeature()
                     runBlocking {
-                        core.refresh()
-                        authorizeInternal(request, feature, nonce = null)
+                        if (component == null) core.refresh() else component.refresh()
+                        authorizeInternal(component, request, feature, nonce = null)
                     }
                 }.getOrNull()
                 AuthenticationAction.CLEAR -> {
                     val authorization = request.tag(AuthorizedHeaders::class.java) ?: return null
-                    runCatching { runBlocking { core.clearSessionIfCurrent(authorization) } }
+                    runCatching {
+                        runBlocking {
+                            if (component == null) {
+                                core.clearSessionIfCurrent(authorization)
+                            } else {
+                                component.clearSessionIfCurrent(authorization)
+                            }
+                        }
+                    }
                     null
                 }
                 AuthenticationAction.NONE -> null
@@ -137,15 +208,140 @@ public class LatchwayClient(
     }
 
     public suspend fun authorize(request: Request, feature: String): Request =
-        authorizeInternal(request, feature, nonce = null)
+        authorizeInternal(null, request, feature, nonce = null)
 
     /** Creates exactly one replacement proof for a validated server DPoP nonce challenge. */
     public suspend fun authorize(request: Request, feature: String, nonce: String): Request =
-        authorizeInternal(request, feature, nonce)
+        authorizeInternal(null, request, feature, nonce)
+
+    /** Authorizes an OkHttp request with an independently keyed native component session. */
+    public suspend fun authorize(
+        component: LatchwayComponentClient,
+        request: Request,
+        feature: String,
+        nonce: String? = null,
+    ): Request {
+        return authorizeInternal(component, request, feature, nonce)
+    }
 
     public suspend fun quota(feature: String): LatchwayQuotaSnapshot = core.quota(feature)
 
     public suspend fun revokeCurrentInstallation(): Unit = core.revokeCurrentInstallation()
+
+    public suspend fun provisionComponent(
+        definitionId: String,
+        requestedFeatures: Set<String>,
+    ): LatchwayComponentClient = ComponentProvisioningLocks.withLock(
+        "${storageNamespace(configuration)}:$definitionId",
+    ) {
+        validateComponentDefinition(definitionId)
+        require(requestedFeatures.isNotEmpty() && requestedFeatures.size <= 256) {
+            "requestedFeatures must contain between 1 and 256 unique features"
+        }
+        requestedFeatures.forEach(::validateFeature)
+        val storage = componentStorage(configuration, definitionId)
+        val signer = AndroidKeystoreInstallationSigner.create(
+            context = applicationContext,
+            alias = storage.keyAlias,
+            policy = configuration.keyPolicy,
+        )
+        val stateStore = AndroidEncryptedComponentSessionStateStore(applicationContext, storage.stateNamespace)
+        val component = try {
+            core.provisionComponent(definitionId, requestedFeatures, signer, stateStore)
+        } catch (error: Exception) {
+            retireUnregisteredComponent(stateStore, signer)
+            throw error
+        }
+        val componentId = try {
+            requireNotNull(component.diagnostics().componentId)
+        } catch (error: Exception) {
+            runCatching { component.revoke() }
+            retireUnregisteredComponent(stateStore, signer)
+            throw error
+        }
+        try {
+            registerComponent(definitionId, componentId, storage, signer)
+        } catch (error: Exception) {
+            // Never leave an independently keyed session untracked: family
+            // retirement relies only on this safe, non-secret registry.
+            runCatching { component.revoke() }
+            retireUnregisteredComponent(stateStore, signer)
+            throw LatchwayException(
+                code = LatchwayErrorCode.SECURE_STATE_UNAVAILABLE,
+                safeMessage = "The native component registry could not be persisted",
+                cause = error,
+            )
+        }
+        component
+    }
+
+    public suspend fun openComponent(definitionId: String): LatchwayComponentClient =
+        ComponentProvisioningLocks.withLock("${storageNamespace(configuration)}:$definitionId") {
+            validateComponentDefinition(definitionId)
+            val storage = componentStorage(configuration, definitionId)
+            val signer = AndroidKeystoreInstallationSigner.create(
+                context = applicationContext,
+                alias = storage.keyAlias,
+                policy = configuration.keyPolicy,
+            )
+            val stateStore = AndroidEncryptedComponentSessionStateStore(
+                applicationContext,
+                storage.stateNamespace,
+            )
+            val component = try {
+                core.openComponent(
+                    definitionId = definitionId,
+                    signer = signer,
+                    stateStore = stateStore,
+                )
+            } catch (error: LatchwayException) {
+                if (error.code == LatchwayErrorCode.COMPONENT_NOT_PROVISIONED ||
+                    error.code == LatchwayErrorCode.COMPONENT_KEY_REPLACED
+                ) {
+                    retireUnregisteredComponent(stateStore, signer)
+                }
+                throw error
+            }
+            val componentId = requireNotNull(component.diagnostics().componentId)
+            try {
+                registerComponent(definitionId, componentId, storage, signer)
+            } catch (error: Exception) {
+                retireUnregisteredComponent(stateStore, signer)
+                throw LatchwayException(
+                    code = LatchwayErrorCode.SECURE_STATE_UNAVAILABLE,
+                    safeMessage = "The native component registry could not be persisted",
+                    cause = error,
+                )
+            }
+            component
+        }
+
+    public suspend fun revokeComponent(componentId: String) {
+        val registry = ComponentRegistry(applicationContext, storageNamespace(configuration))
+        try {
+            core.revokeComponent(componentId)
+        } catch (error: LatchwayException) {
+            if (error.code in COMPONENT_REVOKE_TERMINAL_CODES) {
+                withContext(NonCancellable) { registry.retire(componentId, applicationContext) }
+            }
+            throw error
+        }
+        withContext(NonCancellable) { registry.retire(componentId, applicationContext) }
+    }
+
+    public suspend fun revokeCurrentInstallationFamily() {
+        try {
+            core.revokeCurrentInstallationFamily()
+        } finally {
+            // Family revocation is an explicit destructive request. Clear
+            // descendant native material even when transport outcome or root
+            // key cleanup is indeterminate; the root can re-provision a child
+            // only if the server family remained active.
+            withContext(NonCancellable) {
+                ComponentRegistry(applicationContext, storageNamespace(configuration)).retireAll(applicationContext)
+            }
+        }
+    }
 
     public suspend fun diagnostics(): LatchwayDiagnostics = core.diagnostics()
 
@@ -160,27 +356,84 @@ public class LatchwayClient(
         controlClient.dispatcher.executorService.shutdown()
     }
 
-    private suspend fun authorizeInternal(request: Request, feature: String, nonce: String?): Request {
+    private suspend fun authorizeInternal(
+        component: LatchwayComponentClient?,
+        request: Request,
+        feature: String,
+        nonce: String?,
+    ): Request {
         validateFeature(feature)
         if (!isGatewayOrigin(request.url)) {
             throw LatchwayException(
-                code = LatchwayErrorCode.CONFIGURATION_INVALID,
+                code = LatchwayErrorCode.TRANSPORT_DESTINATION_NOT_ALLOWED,
                 safeMessage = "Latchway credentials can only be attached to the configured gateway origin",
             )
         }
+        requireAllowedDataPlaneRequest(request, feature)
         rejectUpstreamCredentials(request, authorizationWillBeReplaced = true)
-        val authorized = core.authorize(request.method, request.url.toUri(), feature, nonce)
-        return request.newBuilder()
+        val authorized = if (component == null) {
+            core.authorize(request.method, request.url.toUri(), feature, nonce)
+        } else {
+            component.authorize(request.method, request.url.toUri(), feature, nonce)
+        }
+        return authorizedRequest(request, feature, authorized, component, nonce)
+    }
+
+    private fun authorizedRequest(
+        request: Request,
+        feature: String,
+        authorized: AuthorizedHeaders,
+        component: LatchwayComponentClient?,
+        nonce: String?,
+    ): Request = request.newBuilder()
             .header("Authorization", authorized.authorizationHeader())
             .header("DPoP", authorized.dpopHeader())
             .header("X-Latchway-Protocol-Version", LATCHWAY_PROTOCOL_VERSION.toString())
             .header("X-Latchway-SDK", configuration.clientPlatform.sdkHeaderValue)
             .header("X-Latchway-SDK-Version", configuration.sdkVersion)
+            .header("X-Latchway-Framework", configuration.framework.id)
+            .header("X-Latchway-Framework-Version", configuration.framework.version)
             .header("X-Latchway-Request-ID", authorized.requestId)
             .header("X-Latchway-Feature", feature)
             .tag(AuthorizedHeaders::class.java, authorized)
+            .tag(LatchwayComponentClient::class.java, component)
             .tag(LatchwayFeature::class.java, LatchwayFeature(feature))
+            // The authenticator may return a nonce-bound request that still
+            // passes through the network interceptor. Preserve only that
+            // validated nonce so the final network-bound proof remains bound
+            // to the challenge after the interceptor re-signs it.
+            .latchwayRetryNonce(nonce)
+            // Explicit pre-dispatch nonce/session retries receive a new proof
+            // and a new attempt budget. Clones used by OkHttp's internal
+            // retry/follow-up layer share the already-claimed prior budget.
+            .tag(
+                LatchwayNetworkAttemptBudget::class.java,
+                LatchwayNetworkAttemptBudget(authorized.requestId),
+            )
             .build()
+
+    private fun applyTrustedTerminalResponse(
+        response: Response,
+        component: LatchwayComponentClient?,
+    ) {
+        if (!isGatewayOrigin(response.request.url)) return
+        val code = response.problemCode() ?: return
+        if (code in ROOT_TERMINAL_PROBLEM_CODES) {
+            runCatching {
+                runBlocking {
+                    withContext(NonCancellable) {
+                        try {
+                            core.markCurrentInstallationRevoked()
+                        } finally {
+                            ComponentRegistry(applicationContext, storageNamespace(configuration))
+                                .retireAll(applicationContext)
+                        }
+                    }
+                }
+            }
+        } else if (component != null && code in COMPONENT_RESPONSE_TERMINAL_CODES) {
+            runCatching { runBlocking { component.markTerminal(code) } }
+        }
     }
 
     private suspend fun createCore(): LatchwayCoreClient {
@@ -198,6 +451,7 @@ public class LatchwayClient(
                 identityProvider = configuration.identityProvider,
                 clientPlatform = configuration.clientPlatform,
                 sdkVersion = configuration.sdkVersion,
+                framework = configuration.framework,
                 allowInsecureLoopback = configuration.allowInsecureLoopback,
             ),
             identityTokenProvider = identityTokenProvider,
@@ -222,6 +476,43 @@ public class LatchwayClient(
         url.scheme == configuration.baseUrl.scheme &&
             url.host == configuration.baseUrl.host &&
             url.port == configuration.baseUrl.port
+
+    private fun requireAllowedDataPlaneRequest(request: Request, feature: String) {
+        if (!isAllowedDataPlaneRequest(configuration.baseUrl, request, feature)) {
+            throw LatchwayException(
+                code = LatchwayErrorCode.TRANSPORT_DESTINATION_NOT_ALLOWED,
+                safeMessage = "The request is not an allowed Latchway data-plane route",
+            )
+        }
+    }
+
+    private suspend fun registerComponent(
+        definitionId: String,
+        componentId: String,
+        storage: ComponentStorage,
+        signer: AndroidKeystoreInstallationSigner,
+    ) {
+        ComponentRegistry(applicationContext, storageNamespace(configuration)).register(
+            RegisteredComponent(
+                definitionId = definitionId,
+                componentId = componentId,
+                keyAlias = storage.keyAlias,
+                stateNamespace = storage.stateNamespace,
+                keyThumbprint = signer.publicJwk.thumbprint(),
+            ),
+        )
+    }
+
+    private suspend fun retireUnregisteredComponent(
+        stateStore: AndroidEncryptedComponentSessionStateStore,
+        signer: AndroidKeystoreInstallationSigner,
+    ): Unit = withContext(NonCancellable) {
+        try {
+            stateStore.destroy()
+        } finally {
+            signer.reset()
+        }
+    }
 }
 
 internal object LatchwayAndroidRuntime {
@@ -300,15 +591,203 @@ private fun PackageInfo.compatibleVersionCode(): Long = if (Build.VERSION.SDK_IN
     versionCode.toLong()
 }
 
-private fun storageNamespace(configuration: LatchwayConfiguration): String {
-    val input = "${configuration.baseUrl.scheme}://${configuration.baseUrl.host}:${configuration.baseUrl.port}/" +
-        "${configuration.applicationId}/${configuration.environment}"
+internal fun storageNamespace(configuration: LatchwayConfiguration): String {
+    val input = "${configuration.baseUrl.scheme}://${configuration.baseUrl.host}:${configuration.baseUrl.port}" +
+        configuration.baseUrl.encodedPath +
+        "${configuration.applicationId}/${configuration.environment}/${configuration.identityProvider}"
     val platformInput = "$input/${configuration.clientPlatform.wireValue}"
     return Base64Url.encode(
         MessageDigest.getInstance("SHA-256").digest(platformInput.toByteArray(StandardCharsets.UTF_8)),
     )
         .take(32)
 }
+
+private data class ComponentStorage(
+    val keyAlias: String,
+    val stateNamespace: String,
+)
+
+private object ComponentProvisioningLocks {
+    private val locks = ConcurrentHashMap<String, Mutex>()
+
+    suspend fun <T> withLock(key: String, operation: suspend () -> T): T {
+        val mutex = locks[key] ?: Mutex().let { locks.putIfAbsent(key, it) ?: it }
+        return mutex.withLock { operation() }
+    }
+}
+
+private object ComponentRegistryLocks {
+    private val locks = ConcurrentHashMap<String, Mutex>()
+
+    suspend fun <T> withLock(key: String, operation: suspend () -> T): T {
+        val mutex = locks[key] ?: Mutex().let { locks.putIfAbsent(key, it) ?: it }
+        return mutex.withLock { operation() }
+    }
+}
+
+private fun componentStorage(
+    configuration: LatchwayConfiguration,
+    definitionId: String,
+): ComponentStorage {
+    val digest = MessageDigest.getInstance("SHA-256").digest(
+        "${storageNamespace(configuration)}/$definitionId".toByteArray(StandardCharsets.UTF_8),
+    )
+    val identifier = Base64Url.encode(digest).take(32)
+    return ComponentStorage(
+        keyAlias = "dev.latchway.component.$identifier.dpop.v1",
+        stateNamespace = "c.$identifier",
+    )
+}
+
+private fun validateComponentDefinition(definitionId: String) {
+    require(Regex("^[a-z][a-z0-9_-]{0,62}$").matches(definitionId)) {
+        "definitionId is not a canonical identifier"
+    }
+}
+
+internal fun isAllowedDataPlaneRequest(
+    gatewayBaseUrl: HttpUrl,
+    request: Request,
+    feature: String,
+): Boolean {
+    if (!request.url.hasSameOrigin(gatewayBaseUrl)) return false
+    if (request.url.username.isNotEmpty() || request.url.password.isNotEmpty() || request.url.fragment != null) {
+        return false
+    }
+    val basePath = gatewayBaseUrl.encodedPath
+    if (!basePath.endsWith('/') || !request.url.encodedPath.startsWith(basePath)) return false
+    val relativePath = "/" + request.url.encodedPath.removePrefix(basePath)
+    if (relativePath in STANDARD_DATA_PLANE_PATHS) {
+        return request.method == "POST"
+    }
+    if (request.method !in OPAQUE_DATA_PLANE_METHODS) return false
+    if (request.url.query != null) return false
+    val prefix = "/proxy/$feature/"
+    if (!relativePath.startsWith(prefix)) return false
+    val remaining = relativePath.removePrefix(prefix)
+    val lowerRemaining = remaining.lowercase(Locale.US)
+    return remaining.length in 1..2_048 &&
+        remaining.split('/').all { it.isNotEmpty() && it != "." && it != ".." } &&
+        "%2e" !in lowerRemaining && "%2f" !in lowerRemaining && "%5c" !in lowerRemaining &&
+        '\\' !in remaining &&
+        !remaining.startsWith("http:", ignoreCase = true) &&
+        !remaining.startsWith("https:", ignoreCase = true)
+}
+
+private val STANDARD_DATA_PLANE_PATHS = setOf(
+    "/v1/responses",
+    "/v1/chat/completions",
+    "/v1/embeddings",
+    "/v1/messages",
+)
+
+private val OPAQUE_DATA_PLANE_METHODS = setOf("GET", "POST", "PUT", "PATCH", "DELETE")
+
+private data class RegisteredComponent(
+    val definitionId: String,
+    val componentId: String,
+    val keyAlias: String,
+    val stateNamespace: String,
+    val keyThumbprint: String,
+) {
+    fun encode(): String = listOf(
+        definitionId,
+        componentId,
+        keyAlias,
+        stateNamespace,
+        keyThumbprint,
+    ).joinToString("|")
+
+    companion object {
+        fun decode(value: String): RegisteredComponent? {
+            val fields = value.split('|')
+            if (fields.size != 5) return null
+            return runCatching {
+                validateComponentDefinition(fields[0])
+                require(Regex("^cmp_[A-Za-z0-9_-]{16,128}$").matches(fields[1]))
+                require(Regex("^[A-Za-z0-9._-]{1,128}$").matches(fields[2]))
+                require(Regex("^[A-Za-z0-9._-]{1,80}$").matches(fields[3]))
+                require(Base64Url.decode(fields[4]).size == 32)
+                RegisteredComponent(fields[0], fields[1], fields[2], fields[3], fields[4])
+            }.getOrNull()
+        }
+    }
+}
+
+/** Stores only safe component/key references; credentials remain AES-GCM encrypted. */
+private class ComponentRegistry(
+    context: Context,
+    private val namespace: String,
+) {
+    private val preferences = context.applicationContext.getSharedPreferences(
+        "dev.latchway.component-registry.$namespace",
+        Context.MODE_PRIVATE,
+    )
+
+    suspend fun register(component: RegisteredComponent) = ComponentRegistryLocks.withLock(namespace) {
+        val current = entries().associateBy { it.componentId }.toMutableMap()
+        current.entries.removeAll { it.value.definitionId == component.definitionId }
+        current[component.componentId] = component
+        check(preferences.edit().putStringSet(ENTRIES, current.values.mapTo(HashSet()) { it.encode() }).commit()) {
+            "Component registry could not be persisted"
+        }
+    }
+
+    suspend fun retire(componentId: String, context: Context): Unit =
+        ComponentRegistryLocks.withLock(namespace) {
+            val current = entries().associateBy { it.componentId }.toMutableMap()
+            val component = current[componentId] ?: return@withLock
+            // Keep the safe reference durable until both native secret stores
+            // have been retired; a transient Keystore failure stays retryable.
+            retire(component, context)
+            current.remove(componentId)
+            persist(current.values)
+        }
+
+    suspend fun retireAll(context: Context): Unit = ComponentRegistryLocks.withLock(namespace) {
+        val remaining = entries().associateBy { it.componentId }.toMutableMap()
+        var firstFailure: Exception? = null
+        remaining.values.toList().forEach { component ->
+            try {
+                retire(component, context)
+                remaining.remove(component.componentId)
+            } catch (error: Exception) {
+                firstFailure = firstFailure ?: error
+            }
+        }
+        persist(remaining.values)
+        firstFailure?.let { throw it }
+    }
+
+    private fun entries(): List<RegisteredComponent> =
+        preferences.getStringSet(ENTRIES, emptySet()).orEmpty().mapNotNull(RegisteredComponent::decode)
+
+    private suspend fun retire(component: RegisteredComponent, context: Context) {
+        try {
+            AndroidEncryptedComponentSessionStateStore(context, component.stateNamespace).destroy()
+        } finally {
+            AndroidKeystoreInstallationSigner.destroy(component.keyAlias, component.keyThumbprint)
+        }
+    }
+
+    private fun persist(components: Collection<RegisteredComponent>) {
+        check(preferences.edit().putStringSet(ENTRIES, components.mapTo(HashSet()) { it.encode() }).commit()) {
+            "Component registry could not be persisted"
+        }
+    }
+
+    private companion object {
+        const val ENTRIES = "components.v1"
+    }
+}
+
+private val COMPONENT_REVOKE_TERMINAL_CODES = setOf(
+    LatchwayErrorCode.COMPONENT_REVOKED,
+    LatchwayErrorCode.COMPONENT_KEY_INVALID,
+    LatchwayErrorCode.COMPONENT_KEY_REPLACED,
+    LatchwayErrorCode.INSTALLATION_FAMILY_REVOKED,
+    LatchwayErrorCode.INSTALLATION_FAMILY_NOT_FOUND,
+)
 
 private fun validateFeature(feature: String) {
     require(Regex("^[a-z][a-z0-9_-]{0,62}$").matches(feature)) { "feature is not a canonical identifier" }
@@ -324,8 +803,37 @@ internal fun responseCount(response: Response): Int {
     return count
 }
 
+internal class LatchwayNetworkAttemptBudget(val requestId: String) {
+    private val claimed = AtomicBoolean(false)
+    fun claim(): Boolean = claimed.compareAndSet(false, true)
+}
+
+internal data class LatchwayRetryNonce(val value: String) {
+    init { require(isValidNonce(value)) { "DPoP retry nonce is invalid" } }
+}
+
+internal fun Request.Builder.latchwayRetryNonce(nonce: String?): Request.Builder =
+    tag(LatchwayRetryNonce::class.java, nonce?.let(::LatchwayRetryNonce))
+
+internal fun Request.latchwayRetryNonce(): String? =
+    tag(LatchwayRetryNonce::class.java)?.value
+
+internal fun claimNetworkAttempt(request: Request) {
+    val budget = request.tag(LatchwayNetworkAttemptBudget::class.java) ?: throw LatchwayException(
+        code = LatchwayErrorCode.CONFIGURATION_INVALID,
+        safeMessage = "Install the Latchway application interceptor before the network interceptor",
+    )
+    if (!budget.claim()) {
+        throw LatchwayException(
+            code = LatchwayErrorCode.TRANSPORT_REQUEST_NOT_REPLAYABLE,
+            safeMessage = "The request may already have reached the upstream and cannot be replayed automatically",
+        )
+    }
+}
+
+@Suppress("UNNECESSARY_SAFE_CALL") // Response.body is nullable in supported OkHttp 4.x.
 internal fun Response.problemCode(): LatchwayErrorCode? = try {
-    if ((code != 401 && code != 403) || body.contentType()?.let {
+    if ((code != 401 && code != 403) || body?.contentType()?.let {
             it.type != "application" || it.subtype != "problem+json"
         } != false
     ) {
@@ -353,10 +861,12 @@ internal fun Response.problemCode(): LatchwayErrorCode? = try {
                 val problemCode = LatchwayErrorCode.fromWire(rawCode).takeIf { it.wireValue == rawCode }
                 when (code) {
                     401 -> problemCode?.takeIf {
-                        it in AUTHENTICATOR_PROBLEM_CODES && retryable == it.canonicalRetryability()
+                        (it in AUTHENTICATOR_PROBLEM_CODES && retryable == it.canonicalRetryability()) ||
+                            (it in COMPONENT_RESPONSE_TERMINAL_CODES && !retryable)
                     }
                     403 -> problemCode?.takeIf {
-                        it == LatchwayErrorCode.INSTALLATION_REVOKED && !retryable
+                        (it in ROOT_TERMINAL_PROBLEM_CODES || it in COMPONENT_RESPONSE_TERMINAL_CODES) &&
+                            !retryable
                     }
                     else -> null
                 }
@@ -373,7 +883,7 @@ internal fun observeInstallationRevocation(
     markRevoked: () -> Unit,
 ) {
     if (trustedOrigin(response.request.url) &&
-        response.problemCode() == LatchwayErrorCode.INSTALLATION_REVOKED
+        response.problemCode() in ROOT_TERMINAL_PROBLEM_CODES
     ) {
         markRevoked()
     }
@@ -386,7 +896,7 @@ internal fun gatewayOriginGuard(gatewayOrigin: HttpUrl): Interceptor = Intercept
         (request.hasLatchwayCredentials() || request.tag(AuthorizedHeaders::class.java) != null)
     ) {
         throw LatchwayException(
-            code = LatchwayErrorCode.CONFIGURATION_INVALID,
+            code = LatchwayErrorCode.TRANSPORT_DESTINATION_NOT_ALLOWED,
             safeMessage = "Latchway credentials cannot follow a redirect to another origin",
         )
     }
@@ -476,6 +986,17 @@ private val AUTHENTICATOR_PROBLEM_CODES: Set<LatchwayErrorCode> = setOf(
     LatchwayErrorCode.SESSION_EXPIRED,
     LatchwayErrorCode.SESSION_REVOKED,
     LatchwayErrorCode.REFRESH_TOKEN_REUSED,
+)
+
+private val ROOT_TERMINAL_PROBLEM_CODES: Set<LatchwayErrorCode> = setOf(
+    LatchwayErrorCode.INSTALLATION_REVOKED,
+    LatchwayErrorCode.INSTALLATION_FAMILY_REVOKED,
+)
+
+private val COMPONENT_RESPONSE_TERMINAL_CODES: Set<LatchwayErrorCode> = setOf(
+    LatchwayErrorCode.COMPONENT_REVOKED,
+    LatchwayErrorCode.COMPONENT_KEY_INVALID,
+    LatchwayErrorCode.COMPONENT_KEY_REPLACED,
 )
 
 private fun LatchwayErrorCode.canonicalRetryability(): Boolean = when (this) {

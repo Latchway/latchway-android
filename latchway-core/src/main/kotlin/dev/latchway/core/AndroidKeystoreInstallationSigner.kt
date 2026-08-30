@@ -99,6 +99,28 @@ public class AndroidKeystoreInstallationSigner private constructor(
             }
         }
 
+        /**
+         * Deletes only the alias that still owns [expectedThumbprint]. This is
+         * used to retire persisted component keys without risking deletion of
+         * a concurrently-created replacement.
+         */
+        public suspend fun destroy(
+            alias: String,
+            expectedThumbprint: String,
+        ): Unit = withContext(Dispatchers.IO) {
+            require(ALIAS.matches(alias)) { "Keystore alias is invalid" }
+            require(Base64Url.decode(expectedThumbprint).size == 32) {
+                "Expected key thumbprint is invalid"
+            }
+            InstallationKeyAliasLocks.withAlias(alias) {
+                val keyStore = loadKeyStore()
+                val current = (keyStore.getCertificate(alias)?.publicKey as? ECPublicKey)
+                    ?.let(::publicJwk)
+                    ?.thumbprint()
+                if (current == expectedThumbprint) keyStore.deleteEntry(alias)
+            }
+        }
+
         private fun createLocked(
             context: Context,
             alias: String,

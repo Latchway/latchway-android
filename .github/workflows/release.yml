@@ -12,28 +12,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  promote:
-    name: Verify core promotion and create SDK tag
+  authorize-promotion:
+    name: Authenticate core promotion without candidate source
     if: github.repository == 'Latchway/latchway-android'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 10
     permissions:
       attestations: read
-      contents: write
+      contents: read
     outputs:
-      commit: ${{ steps.promotion.outputs.release_commit }}
-      tag: ${{ steps.promotion.outputs.release_tag }}
-      version: ${{ steps.promotion.outputs.release_version }}
-      core_tag: ${{ steps.promotion.outputs.core_tag }}
-      report_sha256: ${{ steps.promotion.outputs.report_sha256 }}
+      commit: ${{ steps.coordinates.outputs.commit }}
     steps:
-      - name: Check out exact promoted Android source
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ github.event.client_payload.repository.commit }}
-          fetch-depth: 0
-          persist-credentials: false
       - name: Validate dispatch envelope before network access
+        id: coordinates
         shell: bash
         env:
           SDK_ID: ${{ github.event.client_payload.repository.id }}
@@ -48,14 +39,25 @@ jobs:
           set -euo pipefail
           test "$SDK_ID" = android
           [[ "$SDK_COMMIT" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$SDK_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          [[ "$SDK_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]
           test "$SDK_TAG" = "v$SDK_VERSION"
           [[ "$CORE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]
           [[ "$REPORT_SHA256" =~ ^[0-9a-f]{64}$ ]]
           [[ "$OCI_IMAGE_DIGEST" =~ ^ghcr\.io/latchway/latchway@sha256:[0-9a-f]{64}$ ]]
           test "$REPORT_URL" = "https://github.com/Latchway/latchway/releases/download/$CORE_TAG/latchway-cross-repository-promotion.json"
           test "$GITHUB_SHA" = "$SDK_COMMIT"
-          test "$(git rev-parse --verify HEAD)" = "$SDK_COMMIT"
+          printf 'commit=%s\n' "$SDK_COMMIT" >> "$GITHUB_OUTPUT"
+      - name: Require fixed GitHub attestation tooling without credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          version_line=$(gh version | head -n 1)
+          [[ "$version_line" =~ ^gh[[:space:]]version[[:space:]]([0-9]+)\.([0-9]+)\.([0-9]+)([[:space:]]\([^()]+\))?$ ]]
+          major=${BASH_REMATCH[1]}
+          minor=${BASH_REMATCH[2]}
+          patch=${BASH_REMATCH[3]}
+          (( major > 2 || (major == 2 && (minor > 97 || (minor == 97 && patch >= 0))) ))
+          gh attestation verify --help >/dev/null
       - name: Download and hash the exact core promotion report
         shell: bash
         env:
@@ -78,18 +80,52 @@ jobs:
           rm -f -- "$auth_config"
           trap - EXIT
           printf '%s  %s\n' "$REPORT_SHA256" "$report" | sha256sum --check --strict
-      - name: Verify the core workflow artifact attestation
+      - name: Verify the core workflow artifact attestation with read-only credentials
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.LATCHWAY_SIBLING_REPOSITORIES_READ_TOKEN || github.token }}
         run: |
-          python3 scripts/require-gh-version.py
+          set -euo pipefail
           gh attestation verify "$RUNNER_TEMP/latchway-cross-repository-promotion.json" \
             --repo Latchway/latchway \
             --signer-workflow Latchway/latchway/.github/workflows/cross-repository-conformance.yml \
             --source-ref refs/heads/main \
             --deny-self-hosted-runners
-      - name: Validate exact report, dispatch, and local source bindings
+      - name: Transfer authenticated promotion report to credential-free validation
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sdk-core-promotion-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/latchway-cross-repository-promotion.json
+          if-no-files-found: error
+          retention-days: 1
+
+  verify-promotion:
+    name: Validate candidate source against authenticated promotion
+    if: github.repository == 'Latchway/latchway-android'
+    needs: authorize-promotion
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      commit: ${{ steps.promotion.outputs.release_commit }}
+      core_tag: ${{ steps.promotion.outputs.core_tag }}
+      report_sha256: ${{ steps.promotion.outputs.report_sha256 }}
+      tag: ${{ steps.promotion.outputs.release_tag }}
+      version: ${{ steps.promotion.outputs.release_version }}
+    steps:
+      - name: Check out exact promoted Android SDK source without persisted credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.authorize-promotion.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download authenticated core promotion report
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sdk-core-promotion-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-core-promotion
+      - name: Validate exact report, dispatch, and local source bindings without credentials
         id: promotion
         shell: bash
         env:
@@ -101,8 +137,10 @@ jobs:
           REPORT_SHA256: ${{ github.event.client_payload.promotion_evidence_sha256 }}
           OCI_IMAGE_DIGEST: ${{ github.event.client_payload.oci_image_digest }}
         run: |
+          set -euo pipefail
+          test "$(git rev-parse --verify HEAD)" = "$SDK_COMMIT"
           python3 scripts/verify-release-promotion.py \
-            --report "$RUNNER_TEMP/latchway-cross-repository-promotion.json" \
+            --report "$RUNNER_TEMP/sdk-core-promotion/latchway-cross-repository-promotion.json" \
             --report-url "$REPORT_URL" \
             --report-sha256 "$REPORT_SHA256" \
             --repository-id android \
@@ -113,81 +151,111 @@ jobs:
             --core-tag "$CORE_TAG" \
             --oci-image-digest "$OCI_IMAGE_DIGEST" \
             --github-output "$GITHUB_OUTPUT"
-      - name: Create or verify evidence-gated annotated SDK tag
+
+  promote:
+    name: Create or verify evidence-gated SDK tag without checkout
+    if: github.repository == 'Latchway/latchway-android'
+    needs: verify-promotion
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      commit: ${{ needs.verify-promotion.outputs.commit }}
+      tag: ${{ needs.verify-promotion.outputs.tag }}
+      version: ${{ needs.verify-promotion.outputs.version }}
+      core_tag: ${{ needs.verify-promotion.outputs.core_tag }}
+      report_sha256: ${{ needs.verify-promotion.outputs.report_sha256 }}
+    steps:
+      - name: Create or verify evidence-gated annotated SDK tag using fixed API calls
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          GIT_TAG_READ_TOKEN: ${{ github.token }}
-          RELEASE_COMMIT: ${{ steps.promotion.outputs.release_commit }}
-          RELEASE_TAG: ${{ steps.promotion.outputs.release_tag }}
-          CORE_TAG: ${{ steps.promotion.outputs.core_tag }}
-          REPORT_SHA256: ${{ steps.promotion.outputs.report_sha256 }}
+          RELEASE_COMMIT: ${{ needs.verify-promotion.outputs.commit }}
+          RELEASE_TAG: ${{ needs.verify-promotion.outputs.tag }}
+          CORE_TAG: ${{ needs.verify-promotion.outputs.core_tag }}
+          REPORT_SHA256: ${{ needs.verify-promotion.outputs.report_sha256 }}
         run: |
           set -euo pipefail
-          git_askpass="$RUNNER_TEMP/latchway-git-askpass"
-          umask 077
-          cat > "$git_askpass" <<'EOF'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          case "${1:-}" in
-            *github.com*Username*|*Username*github.com*) printf '%s\n' x-access-token ;;
-            *github.com*Password*|*Password*github.com*)
-              test -n "${GIT_TAG_READ_TOKEN:-}"
-              printf '%s\n' "$GIT_TAG_READ_TOKEN"
-              ;;
-            *) exit 1 ;;
-          esac
-          EOF
-          chmod 700 "$git_askpass"
-          trap 'rm -f -- "$git_askpass"' EXIT
-          git_with_auth() {
-            GIT_ASKPASS="$git_askpass" GIT_TERMINAL_PROMPT=0 git -c credential.helper= "$@"
-          }
+          [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]
+          [[ "$REPORT_SHA256" =~ ^[0-9a-f]{64}$ ]]
           message="Android SDK $RELEASE_TAG
 
           Core promotion: $CORE_TAG
           Promotion evidence SHA-256: $REPORT_SHA256"
-          remote=$(git_with_auth ls-remote --tags origin "refs/tags/$RELEASE_TAG")
-          if [[ -n "$remote" ]]; then
-            tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha)
-            test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object" --jq .object.type)" = commit
-            test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object" --jq .object.sha)" = "$RELEASE_COMMIT"
-            test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object" --jq .message)" = "$message"
-          else
+          set +e
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" \
+            > "$RUNNER_TEMP/sdk-tag-ref.json" 2> "$RUNNER_TEMP/sdk-tag-error.txt"
+          lookup_status=$?
+          set -e
+          if [[ "$lookup_status" -ne 0 ]]; then
+            test "$lookup_status" -eq 1
+            grep --fixed-strings --quiet 'HTTP 404' "$RUNNER_TEMP/sdk-tag-error.txt"
             jq --null-input --arg tag "$RELEASE_TAG" --arg message "$message" \
               --arg object "$RELEASE_COMMIT" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               '{tag: $tag, message: $message, object: $object, type: "commit", tagger: {name: "github-actions[bot]", email: "41898282+github-actions[bot]@users.noreply.github.com", date: $date}}' \
-              > "$RUNNER_TEMP/sdk-tag-object.json"
-            gh api --method POST "repos/$GITHUB_REPOSITORY/git/tags" --input "$RUNNER_TEMP/sdk-tag-object.json" > "$RUNNER_TEMP/sdk-tag-result.json"
-            tag_object=$(jq --raw-output .sha "$RUNNER_TEMP/sdk-tag-result.json")
+              > "$RUNNER_TEMP/sdk-tag-object-create.json"
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/tags" \
+              --input "$RUNNER_TEMP/sdk-tag-object-create.json" > "$RUNNER_TEMP/sdk-tag-result.json"
+            tag_object=$(jq --raw-output '.sha | select(type == "string" and test("^[0-9a-f]{40}$"))' \
+              "$RUNNER_TEMP/sdk-tag-result.json")
             jq --null-input --arg ref "refs/tags/$RELEASE_TAG" --arg sha "$tag_object" \
-              '{ref: $ref, sha: $sha}' > "$RUNNER_TEMP/sdk-tag-ref.json"
-            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" --input "$RUNNER_TEMP/sdk-tag-ref.json" >/dev/null
+              '{ref: $ref, sha: $sha}' > "$RUNNER_TEMP/sdk-tag-ref-create.json"
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              --input "$RUNNER_TEMP/sdk-tag-ref-create.json" >/dev/null
+            gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" > "$RUNNER_TEMP/sdk-tag-ref.json"
           fi
-          git_with_auth fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
-          rm -f -- "$git_askpass"
-          trap - EXIT
-          unset GIT_TAG_READ_TOKEN
-          test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
-          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$RELEASE_COMMIT"
+          tag_object=$(jq --raw-output '.object.sha | select(type == "string" and test("^[0-9a-f]{40}$"))' \
+            "$RUNNER_TEMP/sdk-tag-ref.json")
+          test "$(jq --raw-output .object.type "$RUNNER_TEMP/sdk-tag-ref.json")" = tag
+          gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object" > "$RUNNER_TEMP/sdk-tag-object.json"
+          jq --exit-status --arg tag "$RELEASE_TAG" --arg commit "$RELEASE_COMMIT" --arg message "$message" \
+            '.tag == $tag and .object.type == "commit" and .object.sha == $commit and .message == $message' \
+            "$RUNNER_TEMP/sdk-tag-object.json" >/dev/null
 
-  publish:
+  authorize-release:
+    name: Require immutable GitHub releases without candidate source or OIDC
+    if: github.repository == 'Latchway/latchway-android'
+    needs: promote
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: release-administration
+    permissions: {}
+    steps:
+      - name: Verify immutable-release administration policy with the narrow token
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$GH_TOKEN"
+          settings=$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/immutable-releases")
+          unset GH_TOKEN
+          jq --exit-status '
+            type == "object" and
+            (keys | sort) == ["enabled", "enforced_by_owner"] and
+            .enabled == true and
+            (.enforced_by_owner | type) == "boolean"
+          ' <<<"$settings" >/dev/null
+
+  package:
+    name: Build and validate the Android release without publication credentials
     if: github.repository == 'Latchway/latchway-android'
     needs: promote
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    environment: maven-central
     permissions:
-      contents: write
-      id-token: write
-      attestations: write
-      artifact-metadata: write
+      actions: read
+      contents: read
     env:
       RELEASE_COMMIT: ${{ needs.promote.outputs.commit }}
       RELEASE_TAG: ${{ needs.promote.outputs.tag }}
       CORE_TAG: ${{ needs.promote.outputs.core_tag }}
       REPORT_SHA256: ${{ needs.promote.outputs.report_sha256 }}
-      LATCHWAY_CENTRAL_SIGNING_FINGERPRINT: ${{ vars.LATCHWAY_MAVEN_SIGNING_FINGERPRINT }}
     steps:
       - name: Check out exact promoted Android source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -195,53 +263,14 @@ jobs:
           ref: ${{ needs.promote.outputs.commit }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Fetch and validate the promoted annotated tag
-        env:
-          GIT_TAG_READ_TOKEN: ${{ github.token }}
+      - name: Validate the promoted annotated tag and Android release source without credentials
         run: |
           set -euo pipefail
-          git_askpass="$RUNNER_TEMP/latchway-git-askpass"
-          umask 077
-          cat > "$git_askpass" <<'EOF'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          case "${1:-}" in
-            *github.com*Username*|*Username*github.com*) printf '%s\n' x-access-token ;;
-            *github.com*Password*|*Password*github.com*)
-              test -n "${GIT_TAG_READ_TOKEN:-}"
-              printf '%s\n' "$GIT_TAG_READ_TOKEN"
-              ;;
-            *) exit 1 ;;
-          esac
-          EOF
-          chmod 700 "$git_askpass"
-          trap 'rm -f -- "$git_askpass"' EXIT
-          git_with_auth() {
-            GIT_ASKPASS="$git_askpass" GIT_TERMINAL_PROMPT=0 git -c credential.helper= "$@"
-          }
           printf 'Android SDK %s\n\nCore promotion: %s\nPromotion evidence SHA-256: %s' \
             "$RELEASE_TAG" "$CORE_TAG" "$REPORT_SHA256" > "$RUNNER_TEMP/sdk-tag-message.txt"
-          git_with_auth fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
-          rm -f -- "$git_askpass"
-          trap - EXIT
-          unset GIT_TAG_READ_TOKEN
           test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
           test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$RELEASE_COMMIT"
           scripts/release-preflight.sh "$RELEASE_TAG"
-      - name: Require protected immutable-release administration policy
-        env:
-          GH_TOKEN: ${{ secrets.LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN }}
-        run: |
-          set -euo pipefail
-          test -n "$GH_TOKEN"
-          python3 scripts/require-gh-version.py
-          gh release verify --help >/dev/null
-          gh release verify-asset --help >/dev/null
-          enabled=$(gh api \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2026-03-10" \
-            "repos/$GITHUB_REPOSITORY/immutable-releases" --jq .enabled)
-          test "$enabled" = true
       - name: Configure Java 17
         uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
         with:
@@ -262,199 +291,653 @@ jobs:
         run: |
           export LATCHWAY_VERSION="${RELEASE_TAG#v}"
           scripts/build-release-artifacts.sh "$LATCHWAY_VERSION"
-      - name: Export the reviewed public half of the Maven signing key
+      - name: Bind the exact promoted annotated tag without credentials
         shell: bash
-        env:
-          LATCHWAY_SIGNING_KEY: ${{ secrets.LATCHWAY_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          tag_object=$(git rev-parse "refs/tags/$RELEASE_TAG")
+          [[ "$tag_object" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git cat-file -t "$tag_object")" = tag
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$RELEASE_COMMIT"
+          message_sha256=$(sha256sum "$RUNNER_TEMP/sdk-tag-message.txt" | cut -d ' ' -f 1)
+          jq --null-input \
+            --arg tag "$RELEASE_TAG" \
+            --arg tag_object_sha "$tag_object" \
+            --arg commit "$RELEASE_COMMIT" \
+            --arg message_sha256 "$message_sha256" \
+            '{schema: "latchway.github-release-tag-binding.v1", tag: $tag,
+              tag_object_sha: $tag_object_sha, commit: $commit,
+              message_sha256: $message_sha256}' \
+            > build/release/github-release-tag-binding.json
+      - name: Stage the closed unsigned Maven candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination="$RUNNER_TEMP/android-registry-candidate"
+          mkdir -m 700 "$destination"
+          install -m 600 -- \
+            "build/release/latchway-android-${{ needs.promote.outputs.version }}-maven-repository.zip" \
+            build/release/SHA256SUMS \
+            build/release/github-release-tag-binding.json \
+            "$destination/"
+      - name: Transfer the unsigned candidate to isolated signing
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: latchway-android-registry-candidate-${{ needs.promote.outputs.version }}
+          path: ${{ runner.temp }}/android-registry-candidate
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  sign-central:
+    name: Sign the closed Maven set without candidate checkout
+    if: github.repository == 'Latchway/latchway-android'
+    needs: [promote, package, authorize-release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: maven-central-signing
+    permissions:
+      actions: read
+    env:
+      RELEASE_COMMIT: ${{ needs.promote.outputs.commit }}
+      RELEASE_TAG: ${{ needs.promote.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.promote.outputs.version }}
+      SIGNING_FINGERPRINT: ${{ vars.LATCHWAY_MAVEN_SIGNING_FINGERPRINT }}
+    steps:
+      - name: Download the exact unsigned Maven candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: latchway-android-registry-candidate-${{ needs.promote.outputs.version }}
+          path: ${{ runner.temp }}/android-registry-candidate
+      - name: Validate and extract the closed Maven set without executing it
+        shell: bash
         run: |
           set -Eeuo pipefail
-          [[ "$LATCHWAY_CENTRAL_SIGNING_FINGERPRINT" =~ ^[0-9A-F]{40}$ ]]
-          signing_key=$LATCHWAY_SIGNING_KEY
-          unset LATCHWAY_SIGNING_KEY
-          keyring=$(mktemp -d "$RUNNER_TEMP/latchway-release-public-key.XXXXXX")
-          chmod 700 "$keyring"
-          printf '%s' "$signing_key" | gpg --batch --homedir "$keyring" --import >/dev/null 2>&1
-          unset signing_key
-          observed=$(gpg --batch --homedir "$keyring" --with-colons --fingerprint \
-            "$LATCHWAY_CENTRAL_SIGNING_FINGERPRINT" | awk -F: '$1 == "fpr" {print $10; exit}')
-          test "$observed" = "$LATCHWAY_CENTRAL_SIGNING_FINGERPRINT"
-          gpg --batch --homedir "$keyring" --armor --export-options export-minimal \
-            --export "$LATCHWAY_CENTRAL_SIGNING_FINGERPRINT" \
-            > build/release/latchway-maven-signing-public-key.asc
-          test -s build/release/latchway-maven-signing-public-key.asc
-      - name: Build the pre-reviewed signed Central Portal bundle
+          [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          test "$RELEASE_TAG" = "v$RELEASE_VERSION"
+          root="$RUNNER_TEMP/android-registry-candidate"
+          archive="$root/latchway-android-$RELEASE_VERSION-maven-repository.zip"
+          test -z "$(find "$root" -type l -print -quit)"
+          find "$root" -mindepth 1 -print | sed "s#^$root/##" | LC_ALL=C sort > "$RUNNER_TEMP/android-candidate-files.txt"
+          printf '%s\n' SHA256SUMS github-release-tag-binding.json \
+            "latchway-android-$RELEASE_VERSION-maven-repository.zip" \
+            | LC_ALL=C sort > "$RUNNER_TEMP/android-expected-files.txt"
+          cmp --silent "$RUNNER_TEMP/android-expected-files.txt" "$RUNNER_TEMP/android-candidate-files.txt"
+          (cd "$root" && sha256sum --check --strict SHA256SUMS)
+          repository="$RUNNER_TEMP/reviewed-maven-repository"
+          mkdir -m 700 "$repository"
+          python3 - "$archive" "$repository" "$RELEASE_VERSION" <<'PY'
+          import hashlib, pathlib, stat, sys, zipfile
+          archive, output, version = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3]
+          modules = ("latchway-core", "latchway-okhttp", "latchway-play-integrity", "latchway-firebase-auth", "latchway-bom")
+          algorithms = ("md5", "sha1", "sha256", "sha512")
+          primary = []
+          for module in modules:
+              extensions = ["pom", "module", "sources.jar", "javadoc.jar"]
+              if module != "latchway-bom":
+                  extensions.append("aar")
+              prefix = f"dev/latchway/{module}/{version}/{module}-{version}"
+              for extension in extensions:
+                  primary.append(prefix + (("." if extension in {"pom", "module", "aar"} else "-") + extension))
+          expected = set(primary + [f"{path}.{algorithm}" for path in primary for algorithm in algorithms])
+          if not archive.is_file() or archive.is_symlink() or archive.stat().st_size > 2 * 1024**3:
+              raise SystemExit("unsafe Maven archive")
+          with zipfile.ZipFile(archive) as source:
+              infos = source.infolist()
+              names = [item.filename for item in infos]
+              if len(names) != len(set(names)) or set(names) != expected:
+                  raise SystemExit("Maven archive is not the exact closed file set")
+              total = 0
+              for item in infos:
+                  mode = (item.external_attr >> 16) & 0xFFFF
+                  if item.is_dir() or item.flag_bits & 1 or item.filename.startswith("/") or "\\" in item.filename or any(part in {"", ".", ".."} for part in item.filename.split("/")) or (mode and not stat.S_ISREG(mode)):
+                      raise SystemExit("unsafe Maven archive entry")
+                  total += item.file_size
+                  if total > 2 * 1024**3:
+                      raise SystemExit("Maven archive expands beyond the reviewed bound")
+                  target = output / item.filename
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  data = source.read(item)
+                  target.write_bytes(data)
+                  target.chmod(0o600)
+          for path in primary:
+              payload = (output / path).read_bytes()
+              for algorithm in algorithms:
+                  if (output / f"{path}.{algorithm}").read_text("ascii") != hashlib.new(algorithm, payload).hexdigest():
+                      raise SystemExit("Maven checksum mismatch")
+          PY
+      - name: Sign only the fixed Maven payload set with the pinned key
         shell: bash
         env:
           LATCHWAY_SIGNING_KEY: ${{ secrets.LATCHWAY_SIGNING_KEY }}
           LATCHWAY_SIGNING_PASSWORD: ${{ secrets.LATCHWAY_SIGNING_PASSWORD }}
-          LATCHWAY_CENTRAL_SIGNING_PUBLIC_KEY: ${{ github.workspace }}/build/release/latchway-maven-signing-public-key.asc
         run: |
-          scripts/build-central-portal-bundle.sh \
-            "${RELEASE_TAG#v}" \
-            "build/release/latchway-android-${RELEASE_TAG#v}-central-portal.zip"
-      - name: Attest the exact release bundle
-        uses: actions/attest-build-provenance@e4d4f7c39adfa4c260fb5c147f0622000aa14b99 # v4.0.0
-        with:
-          subject-path: |
-            build/release/latchway-android-*-maven-repository.zip
-            build/release/latchway-android-*-central-portal.zip
-            build/release/latchway-maven-signing-public-key.asc
-      - name: Create the single-use Maven Central upload intent
-        env:
-          LATCHWAY_RELEASE_VERSION: ${{ needs.promote.outputs.version }}
-        run: |
-          python3 scripts/central-deployment-record.py create-intent \
-            --repository build/release/repository \
-            --archive "build/release/latchway-android-$LATCHWAY_RELEASE_VERSION-maven-repository.zip" \
-            --portal-bundle "build/release/latchway-android-$LATCHWAY_RELEASE_VERSION-central-portal.zip" \
-            --public-key build/release/latchway-maven-signing-public-key.asc \
-            --source-commit "$RELEASE_COMMIT" \
-            --tag "$RELEASE_TAG" \
-            --version "$LATCHWAY_RELEASE_VERSION" \
-            --namespace dev.latchway \
-            --publishing-type user_managed \
-            --output build/release/maven-central-upload-intent.json
-      - name: Attest the exact upload intent
-        uses: actions/attest-build-provenance@e4d4f7c39adfa4c260fb5c147f0622000aa14b99 # v4.0.0
-        with:
-          subject-path: build/release/maven-central-upload-intent.json
-      - name: Create or resume the fixed-asset GitHub draft
-        id: draft
-        env:
-          GH_TOKEN: ${{ github.token }}
-          LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN: ${{ secrets.LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN }}
-        run: |
-          python3 scripts/reconcile-github-release.py \
-            --repository "$GITHUB_REPOSITORY" \
-            --tag "$RELEASE_TAG" \
-            --title "$RELEASE_TAG" \
-            --expected-commit "$RELEASE_COMMIT" \
-            --expected-tag-message-file "$RUNNER_TEMP/sdk-tag-message.txt" \
-            --tag-binding-output build/release/github-release-tag-binding.json \
-            --draft-only \
-            --guard-asset maven-central-upload-intent.json \
-            --github-output "$GITHUB_OUTPUT" \
-            --allowed-asset-name "latchway-android-${{ needs.promote.outputs.version }}-maven-repository.zip" \
-            --allowed-asset-name "latchway-android-${{ needs.promote.outputs.version }}-central-portal.zip" \
-            --allowed-asset-name SHA256SUMS \
-            --allowed-asset-name github-release-tag-binding.json \
-            --allowed-asset-name latchway-maven-signing-public-key.asc \
-            --allowed-asset-name maven-central-upload-intent.json \
-            --allowed-asset-name maven-central-deployment.json \
-            --allowed-asset-name maven-central-deployment-status.json \
-            --allowed-asset-name maven-central-release-evidence.json \
-            "build/release/latchway-android-${{ needs.promote.outputs.version }}-maven-repository.zip" \
-            "build/release/latchway-android-${{ needs.promote.outputs.version }}-central-portal.zip" \
-            build/release/latchway-maven-signing-public-key.asc \
-            build/release/maven-central-upload-intent.json
-      - name: Durably attach the exact promoted tag binding before Portal access
-        env:
-          GH_TOKEN: ${{ github.token }}
-          LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN: ${{ secrets.LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN }}
-        run: |
-          python3 scripts/reconcile-github-release.py \
-            --repository "$GITHUB_REPOSITORY" \
-            --tag "$RELEASE_TAG" \
-            --title "$RELEASE_TAG" \
-            --expected-commit "$RELEASE_COMMIT" \
-            --expected-tag-message-file "$RUNNER_TEMP/sdk-tag-message.txt" \
-            --tag-binding-output build/release/github-release-tag-binding.json \
-            --draft-only \
-            --allowed-asset-name "latchway-android-${{ needs.promote.outputs.version }}-maven-repository.zip" \
-            --allowed-asset-name "latchway-android-${{ needs.promote.outputs.version }}-central-portal.zip" \
-            --allowed-asset-name SHA256SUMS \
-            --allowed-asset-name github-release-tag-binding.json \
-            --allowed-asset-name latchway-maven-signing-public-key.asc \
-            --allowed-asset-name maven-central-upload-intent.json \
-            --allowed-asset-name maven-central-deployment.json \
-            --allowed-asset-name maven-central-deployment-status.json \
-            --allowed-asset-name maven-central-release-evidence.json \
-            "build/release/latchway-android-${{ needs.promote.outputs.version }}-maven-repository.zip" \
-            "build/release/latchway-android-${{ needs.promote.outputs.version }}-central-portal.zip" \
-            build/release/github-release-tag-binding.json \
-            build/release/latchway-maven-signing-public-key.asc \
-            build/release/maven-central-upload-intent.json
-      - name: Restore an exact deployment record from the draft when present
-        id: restore
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          release=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
-          for name in maven-central-deployment.json maven-central-deployment-status.json; do
-            count=$(jq --arg name "$name" '[.assets[] | select(.name == $name)] | length' <<<"$release")
-            test "$count" -le 1
-            if test "$count" = 1; then
-              asset_id=$(jq -r --arg name "$name" '.assets[] | select(.name == $name) | .id' <<<"$release")
-              gh api --method GET -H "Accept: application/octet-stream" \
-                "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" \
-                > "build/release/$name"
-            fi
+          set -Eeuo pipefail
+          set +x
+          umask 077
+          [[ "$SIGNING_FINGERPRINT" =~ ^[0-9A-F]{40}$ ]]
+          test -n "$LATCHWAY_SIGNING_KEY"
+          test -n "$LATCHWAY_SIGNING_PASSWORD"
+          [[ "$LATCHWAY_SIGNING_PASSWORD" != *$'\n'* && "$LATCHWAY_SIGNING_PASSWORD" != *$'\r'* ]]
+          signing_key=$LATCHWAY_SIGNING_KEY
+          signing_password=$LATCHWAY_SIGNING_PASSWORD
+          unset LATCHWAY_SIGNING_KEY LATCHWAY_SIGNING_PASSWORD
+          keyring=$(mktemp -d "$RUNNER_TEMP/latchway-central-signing.XXXXXX")
+          trap 'rm -rf -- "$keyring"' EXIT HUP INT TERM
+          chmod 700 "$keyring"
+          printf '%s' "$signing_key" | gpg --batch --homedir "$keyring" --import >/dev/null 2>&1
+          unset signing_key
+          observed=$(gpg --batch --homedir "$keyring" --with-colons --fingerprint "$SIGNING_FINGERPRINT" | awk -F: '$1 == "fpr" {print $10; exit}')
+          test "$observed" = "$SIGNING_FINGERPRINT"
+          public_key="$RUNNER_TEMP/latchway-maven-signing-public-key.asc"
+          gpg --batch --homedir "$keyring" --armor --export-options export-minimal \
+            --export "$SIGNING_FINGERPRINT" > "$public_key"
+          test -s "$public_key" && test "$(wc -c < "$public_key")" -le 1048576
+          repository="$RUNNER_TEMP/reviewed-maven-repository"
+          modules=(latchway-core latchway-okhttp latchway-play-integrity latchway-firebase-auth latchway-bom)
+          for module in "${modules[@]}"; do
+            extensions=(pom module sources.jar javadoc.jar)
+            [[ "$module" == latchway-bom ]] || extensions+=(aar)
+            for extension in "${extensions[@]}"; do
+              separator=-
+              [[ "$extension" == pom || "$extension" == module || "$extension" == aar ]] && separator=.
+              artifact="$repository/dev/latchway/$module/$RELEASE_VERSION/$module-$RELEASE_VERSION$separator$extension"
+              test -f "$artifact" && test ! -L "$artifact"
+              printf '%s\n' "$signing_password" | gpg --batch --yes --homedir "$keyring" \
+                --pinentry-mode loopback --passphrase-fd 0 --local-user "$SIGNING_FINGERPRINT" \
+                --digest-algo SHA512 --armor --detach-sign --output "$artifact.asc" "$artifact" >/dev/null 2>&1
+              status="$RUNNER_TEMP/${module}-${extension//\//-}.status"
+              gpg --batch --homedir "$keyring" --status-fd 1 --verify "$artifact.asc" "$artifact" > "$status" 2>/dev/null
+              awk -v expected="$SIGNING_FINGERPRINT" '
+                $1 == "[GNUPG:]" && $2 == "VALIDSIG" {
+                  primary = (NF == 12 ? $12 : $3)
+                  if (primary == expected && $10 == "10" && $11 == "00") valid++
+                }
+                END { exit(valid == 1 ? 0 : 1) }
+              ' "$status"
+              test "$(wc -c < "$artifact.asc")" -le 65536
+            done
           done
-          if test -f build/release/maven-central-deployment.json; then
-            echo "record_present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "record_present=false" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Upload once or resume the exact Portal deployment
-        env:
-          LATCHWAY_RELEASE_VERSION: ${{ needs.promote.outputs.version }}
-          LATCHWAY_CENTRAL_PUBLISHING_TYPE: user_managed
-          LATCHWAY_CENTRAL_UPLOAD_INTENT: ${{ github.workspace }}/build/release/maven-central-upload-intent.json
-          LATCHWAY_CENTRAL_DEPLOYMENT_RECORD: ${{ github.workspace }}/build/release/maven-central-deployment.json
-          LATCHWAY_CENTRAL_DEPLOYMENT_STATUS: ${{ github.workspace }}/build/release/maven-central-deployment-status.json
-          LATCHWAY_CENTRAL_INTENT_FRESH: ${{ steps.draft.outputs.guard_uploaded }}
-          LATCHWAY_CENTRAL_STOP_AFTER_RECORD: "true"
-          LATCHWAY_CENTRAL_SKIP_LOCAL_GATES: "true"
-          LATCHWAY_MAVEN_CENTRAL_USERNAME: ${{ secrets.LATCHWAY_MAVEN_CENTRAL_USERNAME }}
-          LATCHWAY_MAVEN_CENTRAL_PASSWORD: ${{ secrets.LATCHWAY_MAVEN_CENTRAL_PASSWORD }}
-          LATCHWAY_CENTRAL_SIGNING_PUBLIC_KEY: ${{ github.workspace }}/build/release/latchway-maven-signing-public-key.asc
-          LATCHWAY_CENTRAL_PORTAL_BUNDLE: ${{ github.workspace }}/build/release/latchway-android-${{ needs.promote.outputs.version }}-central-portal.zip
-        run: scripts/publish-central.sh
-      - name: Durably attach the exact Portal deployment ID before waiting
-        env:
-          GH_TOKEN: ${{ github.token }}
-          LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN: ${{ secrets.LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN }}
+          unset signing_password
+          find "$repository" -exec touch -t 198001010000 {} +
+          portal="$RUNNER_TEMP/latchway-android-$RELEASE_VERSION-central-portal.zip"
+          (cd "$repository" && find . -type f -print | LC_ALL=C sort | zip -X -q "$portal" -@)
+          rm -rf -- "$keyring"
+          trap - EXIT HUP INT TERM
+      - name: Seal the exact signed Portal inputs without private material
+        shell: bash
         run: |
-          python3 scripts/reconcile-github-release.py \
-            --repository "$GITHUB_REPOSITORY" \
-            --tag "$RELEASE_TAG" \
-            --title "$RELEASE_TAG" \
-            --expected-commit "$RELEASE_COMMIT" \
-            --expected-tag-message-file "$RUNNER_TEMP/sdk-tag-message.txt" \
-            --tag-binding-output build/release/github-release-tag-binding.json \
-            --draft-only \
-            --allowed-asset-name "latchway-android-${{ needs.promote.outputs.version }}-maven-repository.zip" \
-            --allowed-asset-name "latchway-android-${{ needs.promote.outputs.version }}-central-portal.zip" \
-            --allowed-asset-name SHA256SUMS \
-            --allowed-asset-name github-release-tag-binding.json \
-            --allowed-asset-name latchway-maven-signing-public-key.asc \
-            --allowed-asset-name maven-central-upload-intent.json \
-            --allowed-asset-name maven-central-deployment.json \
-            --allowed-asset-name maven-central-deployment-status.json \
-            --allowed-asset-name maven-central-release-evidence.json \
-            "build/release/latchway-android-${{ needs.promote.outputs.version }}-maven-repository.zip" \
-            "build/release/latchway-android-${{ needs.promote.outputs.version }}-central-portal.zip" \
-            build/release/github-release-tag-binding.json \
-            build/release/latchway-maven-signing-public-key.asc \
-            build/release/maven-central-upload-intent.json \
-            build/release/maven-central-deployment.json
-      - name: Wait on only the recorded Portal deployment
+          set -Eeuo pipefail
+          unsigned="$RUNNER_TEMP/android-registry-candidate/latchway-android-$RELEASE_VERSION-maven-repository.zip"
+          portal="$RUNNER_TEMP/latchway-android-$RELEASE_VERSION-central-portal.zip"
+          public_key="$RUNNER_TEMP/latchway-maven-signing-public-key.asc"
+          repository="$RUNNER_TEMP/reviewed-maven-repository"
+          intent="$RUNNER_TEMP/maven-central-upload-intent.json"
+          python3 - "$repository" "$unsigned" "$portal" "$public_key" "$intent" "$RELEASE_VERSION" "$RELEASE_COMMIT" "$RELEASE_TAG" <<'PY'
+          import hashlib, json, pathlib, sys
+          repository, unsigned, portal, public_key, output = map(pathlib.Path, sys.argv[1:6])
+          version, commit, tag = sys.argv[6:9]
+          modules = ("latchway-core", "latchway-okhttp", "latchway-play-integrity", "latchway-firebase-auth", "latchway-bom")
+          primaries = []
+          for module in modules:
+              extensions = ["pom", "module", "sources.jar", "javadoc.jar"]
+              if module != "latchway-bom":
+                  extensions.append("aar")
+              prefix = f"dev/latchway/{module}/{version}/{module}-{version}"
+              primaries += [prefix + (("." if extension in {"pom", "module", "aar"} else "-") + extension) for extension in extensions]
+          paths = sorted(primaries + [f"{path}.{algorithm}" for path in primaries for algorithm in ("md5", "sha1", "sha256", "sha512")])
+          rows = [{"path": path, "bytes": (repository/path).stat().st_size, "sha256": hashlib.sha256((repository/path).read_bytes()).hexdigest()} for path in paths]
+          canonical = lambda value: (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
+          digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+          portal_sha = digest(portal)
+          value = {
+              "schema": "latchway.maven-central-upload-intent.v2",
+              "repository": "Latchway/latchway-android",
+              "source_commit": commit,
+              "release_tag": tag,
+              "version": version,
+              "namespace": "dev.latchway",
+              "deployment_name": f"latchway-android-v{version}-{commit[:12]}-{portal_sha}",
+              "publishing_type": "user_managed",
+              "reviewed_repository_archive_sha256": digest(unsigned),
+              "reviewed_repository_manifest_sha256": hashlib.sha256(canonical(rows)).hexdigest(),
+              "reviewed_repository_file_count": len(paths),
+              "reviewed_portal_bundle_sha256": portal_sha,
+              "reviewed_portal_bundle_file_count": len(paths) + len(primaries),
+              "reviewed_public_key_sha256": digest(public_key),
+              "expected_purls": [f"pkg:maven/dev.latchway/{module}@{version}" for module in modules],
+              "authorization": "recoverable_exact_upload",
+          }
+          output.write_bytes(canonical(value))
+          output.chmod(0o600)
+          PY
+          destination="$RUNNER_TEMP/android-signed-candidate"
+          mkdir -m 700 "$destination"
+          install -m 600 -- \
+            "$unsigned" "$portal" "$public_key" "$intent" \
+            "$RUNNER_TEMP/android-registry-candidate/github-release-tag-binding.json" \
+            "$destination/"
+          unsigned_sha256=$(sha256sum "$unsigned" | cut -d ' ' -f 1)
+          portal_sha256=$(sha256sum "$portal" | cut -d ' ' -f 1)
+          public_key_sha256=$(sha256sum "$public_key" | cut -d ' ' -f 1)
+          intent_sha256=$(sha256sum "$intent" | cut -d ' ' -f 1)
+          jq --null-input --arg commit "$RELEASE_COMMIT" --arg tag "$RELEASE_TAG" --arg version "$RELEASE_VERSION" \
+            --arg unsigned_sha256 "$unsigned_sha256" --arg portal_sha256 "$portal_sha256" \
+            --arg public_key_sha256 "$public_key_sha256" --arg intent_sha256 "$intent_sha256" '
+            {schema: "latchway.android-signed-candidate.v1", repository: "Latchway/latchway-android",
+             source_commit: $commit, release_tag: $tag, version: $version,
+             unsigned_archive_sha256: $unsigned_sha256, portal_bundle_sha256: $portal_sha256,
+             public_key_sha256: $public_key_sha256, upload_intent_sha256: $intent_sha256}
+          ' > "$destination/android-signed-candidate.json"
+      - name: Transfer signed bytes to the no-checkout Portal publisher
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: latchway-android-signed-candidate-${{ needs.promote.outputs.version }}
+          path: ${{ runner.temp }}/android-signed-candidate
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  publish-central:
+    name: Publish or adopt Maven Central bytes without candidate checkout
+    if: github.repository == 'Latchway/latchway-android'
+    needs: [promote, sign-central, authorize-release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: maven-central
+    permissions:
+      actions: read
+    env:
+      RELEASE_COMMIT: ${{ needs.promote.outputs.commit }}
+      RELEASE_TAG: ${{ needs.promote.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.promote.outputs.version }}
+      SIGNING_FINGERPRINT: ${{ vars.LATCHWAY_MAVEN_SIGNING_FINGERPRINT }}
+    steps:
+      - name: Download the exact signed Maven candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: latchway-android-signed-candidate-${{ needs.promote.outputs.version }}
+          path: ${{ runner.temp }}/android-signed-candidate
+      - name: Validate signed bytes and signatures without executing package content
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          test "$RELEASE_TAG" = "v$RELEASE_VERSION"
+          [[ "$SIGNING_FINGERPRINT" =~ ^[0-9A-F]{40}$ ]]
+          root="$RUNNER_TEMP/android-signed-candidate"
+          unsigned="$root/latchway-android-$RELEASE_VERSION-maven-repository.zip"
+          portal="$root/latchway-android-$RELEASE_VERSION-central-portal.zip"
+          public_key="$root/latchway-maven-signing-public-key.asc"
+          intent="$root/maven-central-upload-intent.json"
+          manifest="$root/android-signed-candidate.json"
+          tag_binding="$root/github-release-tag-binding.json"
+          test -z "$(find "$root" -type l -print -quit)"
+          find "$root" -mindepth 1 -print | sed "s#^$root/##" | LC_ALL=C sort > "$RUNNER_TEMP/signed-candidate-files.txt"
+          printf '%s\n' android-signed-candidate.json github-release-tag-binding.json \
+            "latchway-android-$RELEASE_VERSION-central-portal.zip" \
+            "latchway-android-$RELEASE_VERSION-maven-repository.zip" \
+            latchway-maven-signing-public-key.asc maven-central-upload-intent.json \
+            | LC_ALL=C sort > "$RUNNER_TEMP/signed-expected-files.txt"
+          cmp --silent "$RUNNER_TEMP/signed-expected-files.txt" "$RUNNER_TEMP/signed-candidate-files.txt"
+          for file in "$unsigned" "$portal" "$public_key" "$intent" "$manifest" "$tag_binding"; do
+            test -f "$file" && test ! -L "$file" && test -s "$file"
+          done
+          test "$(wc -c < "$intent" | tr -d ' ')" -le 2097152
+          unsigned_sha256=$(sha256sum "$unsigned" | cut -d ' ' -f 1)
+          portal_sha256=$(sha256sum "$portal" | cut -d ' ' -f 1)
+          public_key_sha256=$(sha256sum "$public_key" | cut -d ' ' -f 1)
+          intent_sha256=$(sha256sum "$intent" | cut -d ' ' -f 1)
+          jq --exit-status --arg commit "$RELEASE_COMMIT" --arg tag "$RELEASE_TAG" --arg version "$RELEASE_VERSION" \
+            --arg unsigned_sha256 "$unsigned_sha256" --arg portal_sha256 "$portal_sha256" \
+            --arg public_key_sha256 "$public_key_sha256" --arg intent_sha256 "$intent_sha256" '
+            (keys | sort) == ["portal_bundle_sha256", "public_key_sha256", "release_tag", "repository", "schema", "source_commit", "unsigned_archive_sha256", "upload_intent_sha256", "version"] and
+            .schema == "latchway.android-signed-candidate.v1" and .repository == "Latchway/latchway-android" and
+            .source_commit == $commit and .release_tag == $tag and .version == $version and
+            .unsigned_archive_sha256 == $unsigned_sha256 and .portal_bundle_sha256 == $portal_sha256 and
+            .public_key_sha256 == $public_key_sha256 and .upload_intent_sha256 == $intent_sha256
+          ' "$manifest" >/dev/null
+          expected_purls=$(jq --null-input --arg version "$RELEASE_VERSION" \
+            '["latchway-core", "latchway-okhttp", "latchway-play-integrity", "latchway-firebase-auth", "latchway-bom"] | map("pkg:maven/dev.latchway/" + . + "@" + $version)')
+          jq --exit-status --arg commit "$RELEASE_COMMIT" --arg tag "$RELEASE_TAG" --arg version "$RELEASE_VERSION" \
+            --arg unsigned_sha256 "$unsigned_sha256" --arg portal_sha256 "$portal_sha256" \
+            --arg public_key_sha256 "$public_key_sha256" --argjson expected_purls "$expected_purls" '
+            (keys | sort) == ["authorization", "deployment_name", "expected_purls", "namespace", "publishing_type", "release_tag", "repository", "reviewed_portal_bundle_file_count", "reviewed_portal_bundle_sha256", "reviewed_public_key_sha256", "reviewed_repository_archive_sha256", "reviewed_repository_file_count", "reviewed_repository_manifest_sha256", "schema", "source_commit", "version"] and
+            .schema == "latchway.maven-central-upload-intent.v2" and .repository == "Latchway/latchway-android" and
+            .source_commit == $commit and .release_tag == $tag and .version == $version and .namespace == "dev.latchway" and
+            .publishing_type == "user_managed" and .authorization == "recoverable_exact_upload" and
+            .reviewed_repository_archive_sha256 == $unsigned_sha256 and
+            .reviewed_portal_bundle_sha256 == $portal_sha256 and .reviewed_public_key_sha256 == $public_key_sha256 and
+            .reviewed_repository_file_count == 120 and .reviewed_portal_bundle_file_count == 144 and
+            (.reviewed_repository_manifest_sha256 | test("^[0-9a-f]{64}$")) and
+            .deployment_name == ("latchway-android-v" + $version + "-" + ($commit[0:12]) + "-" + $portal_sha256) and
+            .expected_purls == $expected_purls
+          ' "$intent" >/dev/null
+          verify_root="$RUNNER_TEMP/signed-verification"
+          mkdir -m 700 "$verify_root"
+          python3 - "$unsigned" "$portal" "$verify_root" "$RELEASE_VERSION" <<'PY'
+          import pathlib, stat, sys, zipfile
+          unsigned, portal, output, version = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]), sys.argv[4]
+          modules = ("latchway-core", "latchway-okhttp", "latchway-play-integrity", "latchway-firebase-auth", "latchway-bom")
+          primary = []
+          for module in modules:
+              extensions = ["pom", "module", "sources.jar", "javadoc.jar"]
+              if module != "latchway-bom":
+                  extensions.append("aar")
+              prefix = f"dev/latchway/{module}/{version}/{module}-{version}"
+              primary += [prefix + (("." if extension in {"pom", "module", "aar"} else "-") + extension) for extension in extensions]
+          repository = sorted(primary + [f"{path}.{algorithm}" for path in primary for algorithm in ("md5", "sha1", "sha256", "sha512")])
+          expected = (set(repository), set(repository + [f"{path}.asc" for path in primary]))
+          archives = []
+          for index, archive in enumerate((unsigned, portal)):
+              if not archive.is_file() or archive.is_symlink() or archive.stat().st_size > 2 * 1024**3:
+                  raise SystemExit("unsafe release archive")
+              with zipfile.ZipFile(archive) as source:
+                  infos = source.infolist()
+                  names = [item.filename for item in infos]
+                  if len(names) != len(set(names)) or set(names) != expected[index]:
+                      raise SystemExit("archive closed-set mismatch")
+                  total = 0
+                  values = {}
+                  for item in infos:
+                      mode = (item.external_attr >> 16) & 0xFFFF
+                      if item.is_dir() or item.flag_bits & 1 or item.filename.startswith("/") or "\\" in item.filename or any(part in {"", ".", ".."} for part in item.filename.split("/")) or (mode and not stat.S_ISREG(mode)):
+                          raise SystemExit("unsafe archive entry")
+                      total += item.file_size
+                      if total > 2 * 1024**3 or (item.filename.endswith(".asc") and not 0 < item.file_size <= 65536):
+                          raise SystemExit("archive size bound exceeded")
+                      values[item.filename] = source.read(item)
+                  archives.append(values)
+          for path in repository:
+              if archives[0][path] != archives[1][path]:
+                  raise SystemExit("signed bundle changed reviewed Maven bytes")
+          for path, value in archives[1].items():
+              target = output/path
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_bytes(value)
+              target.chmod(0o600)
+          PY
+          keyring=$(mktemp -d "$RUNNER_TEMP/latchway-central-public-key.XXXXXX")
+          trap 'rm -rf -- "$keyring"' EXIT HUP INT TERM
+          chmod 700 "$keyring"
+          gpg --batch --homedir "$keyring" --import "$public_key" >/dev/null 2>&1
+          observed=$(gpg --batch --homedir "$keyring" --with-colons --fingerprint "$SIGNING_FINGERPRINT" | awk -F: '$1 == "fpr" {print $10; exit}')
+          test "$observed" = "$SIGNING_FINGERPRINT"
+          find "$verify_root" -type f -name '*.asc' -print0 | while IFS= read -r -d '' signature; do
+            artifact=${signature%.asc}
+            gpg --batch --homedir "$keyring" --verify "$signature" "$artifact" >/dev/null 2>&1
+          done
+          rm -rf -- "$keyring"
+          trap - EXIT HUP INT TERM
+      - name: Determine whether all exact public coordinates already exist
+        id: public
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          modules=(latchway-core latchway-okhttp latchway-play-integrity latchway-firebase-auth latchway-bom)
+          published=0
+          for module in "${modules[@]}"; do
+            url="https://repo1.maven.org/maven2/dev/latchway/$module/$RELEASE_VERSION/$module-$RELEASE_VERSION.pom"
+            code=$(curl --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 15 --max-time 60 \
+              --silent --show-error --location --head --output /dev/null --write-out '%{http_code}' "$url")
+            case "$code" in
+              200) published=$((published + 1)) ;;
+              404) ;;
+              *) echo "Maven Central state is unavailable (HTTP $code)" >&2; exit 1 ;;
+            esac
+          done
+          if [[ "$published" -eq 5 ]]; then
+            mode=adopt
+          elif [[ "$published" -eq 0 ]]; then
+            mode=portal
+          else
+            echo "Maven Central exposes only a partial release" >&2
+            exit 1
+          fi
+          mkdir -m 700 "$RUNNER_TEMP/central-publication-state"
+          jq --null-input --arg mode "$mode" --arg version "$RELEASE_VERSION" \
+            '{schema: "latchway.maven-central-publication-mode.v1", mode: $mode, version: $version}' \
+            > "$RUNNER_TEMP/central-publication-state/publication-mode.json"
+          printf 'mode=%s\n' "$mode" >> "$GITHUB_OUTPUT"
+      - name: Upload once or adopt and publish the exact Portal deployment
+        if: steps.public.outputs.mode == 'portal'
+        shell: bash
         env:
-          LATCHWAY_RELEASE_VERSION: ${{ needs.promote.outputs.version }}
-          LATCHWAY_CENTRAL_PUBLISHING_TYPE: user_managed
-          LATCHWAY_CENTRAL_UPLOAD_INTENT: ${{ github.workspace }}/build/release/maven-central-upload-intent.json
-          LATCHWAY_CENTRAL_DEPLOYMENT_RECORD: ${{ github.workspace }}/build/release/maven-central-deployment.json
-          LATCHWAY_CENTRAL_DEPLOYMENT_STATUS: ${{ github.workspace }}/build/release/maven-central-deployment-status.json
-          LATCHWAY_CENTRAL_INTENT_FRESH: "false"
-          LATCHWAY_CENTRAL_STOP_AFTER_RECORD: "false"
-          LATCHWAY_CENTRAL_PUBLISH_AFTER_VALIDATION: "true"
           LATCHWAY_MAVEN_CENTRAL_USERNAME: ${{ secrets.LATCHWAY_MAVEN_CENTRAL_USERNAME }}
           LATCHWAY_MAVEN_CENTRAL_PASSWORD: ${{ secrets.LATCHWAY_MAVEN_CENTRAL_PASSWORD }}
-          LATCHWAY_CENTRAL_SIGNING_PUBLIC_KEY: ${{ github.workspace }}/build/release/latchway-maven-signing-public-key.asc
-          LATCHWAY_CENTRAL_PORTAL_BUNDLE: ${{ github.workspace }}/build/release/latchway-android-${{ needs.promote.outputs.version }}-central-portal.zip
-        run: scripts/publish-central.sh
-      - name: Verify the immutable public artifacts
+        run: |
+          set -Eeuo pipefail
+          set +x
+          umask 077
+          test -n "$LATCHWAY_MAVEN_CENTRAL_USERNAME"
+          test -n "$LATCHWAY_MAVEN_CENTRAL_PASSWORD"
+          root="$RUNNER_TEMP/android-signed-candidate"
+          intent="$root/maven-central-upload-intent.json"
+          portal="$root/latchway-android-$RELEASE_VERSION-central-portal.zip"
+          state_root="$RUNNER_TEMP/central-publication-state"
+          deployment_name=$(jq --raw-output .deployment_name "$intent")
+          portal_api=https://central.sonatype.com/api/v1/publisher
+          auth_file="$RUNNER_TEMP/maven-central-auth"
+          authorization=$(printf '%s:%s' "$LATCHWAY_MAVEN_CENTRAL_USERNAME" "$LATCHWAY_MAVEN_CENTRAL_PASSWORD" | base64 | tr -d '\r\n')
+          printf 'Authorization: Bearer %s\n' "$authorization" > "$auth_file"
+          unset authorization LATCHWAY_MAVEN_CENTRAL_USERNAME LATCHWAY_MAVEN_CENTRAL_PASSWORD
+          trap 'rm -f -- "$auth_file"' EXIT HUP INT TERM
+          query_deployment() {
+            local attempts=$1 listing="$RUNNER_TEMP/central-deployments.json" ids count code
+            for attempt in $(seq 1 "$attempts"); do
+              if ! code=$(curl --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 15 --max-time 120 --max-filesize 2097152 \
+                --silent --show-error --get --header "@$auth_file" --data-urlencode 'namespace=dev.latchway' \
+                --data-urlencode "deploymentName=$deployment_name" --data 'page=0' --data 'size=100' \
+                --data 'sortField=createTimestamp' --data 'sortDirection=desc' \
+                --output "$listing" --write-out '%{http_code}' "$portal_api/deployments"); then
+                return 2
+              fi
+              [[ "$code" == 200 ]] || return 2
+              if ! jq --exit-status '
+                type == "object" and (.deployments | type) == "array" and
+                (.page | type) == "number" and .page == 0 and
+                (.pageSize | type) == "number" and .pageSize >= 1 and
+                (.pageCount | type) == "number" and (.pageCount == 0 or .pageCount == 1) and
+                (.totalResultCount | type) == "number" and .totalResultCount == (.deployments | length)
+              ' "$listing" >/dev/null; then
+                return 2
+              fi
+              ids=$(jq --raw-output --arg name "$deployment_name" \
+                '[.deployments[] | select((.deploymentName // .name) == $name) | (.deploymentId // .id)] | unique | .[]' "$listing")
+              count=$(printf '%s\n' "$ids" | sed '/^$/d' | wc -l | tr -d ' ')
+              [[ "$count" -le 1 ]] || return 2
+              if [[ "$count" -eq 1 ]]; then
+                printf '%s\n' "$ids"
+                return 0
+              fi
+              test "$attempt" = "$attempts" || sleep 10
+            done
+            return 1
+          }
+          lookup_status=0
+          if deployment_id=$(query_deployment 1); then
+            lookup_status=0
+          else
+            lookup_status=$?
+          fi
+          [[ "$lookup_status" -ne 2 ]] || { echo "Central deployment listing could not be authenticated exactly" >&2; exit 1; }
+          if [[ "$lookup_status" -eq 1 ]]; then
+            response="$RUNNER_TEMP/central-upload-response.txt"
+            set +e
+            code=$(curl --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 15 --max-time 900 \
+              --silent --show-error --request POST --header "@$auth_file" \
+              --form "bundle=@$portal;type=application/octet-stream" \
+              --output "$response" --write-out '%{http_code}' \
+              "$portal_api/upload?name=$deployment_name&publishingType=USER_MANAGED")
+            transport_status=$?
+            set -e
+            if [[ "$transport_status" -eq 0 && "$code" == 201 ]]; then
+              deployment_id=$(tr -d '[:space:]' < "$response")
+            fi
+            if [[ ! "$deployment_id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]]; then
+              reconciliation_status=0
+              if deployment_id=$(query_deployment 30); then
+                reconciliation_status=0
+              else
+                reconciliation_status=$?
+              fi
+              [[ "$reconciliation_status" -ne 2 ]] || { echo "Central upload reconciliation failed closed" >&2; exit 1; }
+              [[ "$reconciliation_status" -eq 0 ]] || { echo "Central upload outcome remains unresolved; rerun only to adopt" >&2; exit 1; }
+            fi
+          fi
+          [[ "$deployment_id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]]
+          deployment_id=${deployment_id,,}
+          intent_sha256=$(sha256sum "$intent" | cut -d ' ' -f 1)
+          portal_sha256=$(jq --raw-output .reviewed_portal_bundle_sha256 "$intent")
+          jq --null-input --arg intent_sha256 "$intent_sha256" --arg name "$deployment_name" \
+            --arg version "$RELEASE_VERSION" --arg commit "$RELEASE_COMMIT" --arg id "$deployment_id" \
+            --arg portal_sha256 "$portal_sha256" --argjson purls "$(jq .expected_purls "$intent")" '
+            {schema: "latchway.maven-central-deployment.v2", intent_sha256: $intent_sha256,
+             deployment_name: $name, publishing_type: "user_managed", namespace: "dev.latchway",
+             version: $version, source_commit: $commit, expected_purls: $purls,
+             reviewed_portal_bundle_sha256: $portal_sha256, record_kind: "portal_deployment",
+             deployment_id: $id, public_manifest_sha256: null}
+          ' > "$state_root/maven-central-deployment.json"
+          publish_requested=false
+          status=
+          for attempt in $(seq 1 90); do
+            raw="$RUNNER_TEMP/central-status.json"
+            code=$(curl --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 15 --max-time 120 --max-filesize 2097152 \
+              --silent --show-error --request POST --header "@$auth_file" \
+              --output "$raw" --write-out '%{http_code}' "$portal_api/status?id=$deployment_id")
+            test "$code" = 200
+            jq --exit-status --arg id "$deployment_id" --arg name "$deployment_name" --argjson expected "$(jq .expected_purls "$intent")" '
+              .deploymentId == $id and .deploymentName == $name and
+              (.deploymentState | IN("PENDING", "VALIDATING", "VALIDATED", "PUBLISHING", "PUBLISHED", "FAILED")) and
+              ((.purls // []) | type) == "array" and
+              ((.purls // []) | length) == ((.purls // []) | unique | length) and
+              (((.purls // []) - $expected) | length) == 0 and
+              (if (.deploymentState | IN("VALIDATED", "PUBLISHING", "PUBLISHED")) then ((.purls // []) | sort) == ($expected | sort) else true end)
+            ' "$raw" >/dev/null
+            status=$(jq --raw-output .deploymentState "$raw")
+            case "$status" in
+              PUBLISHED) break ;;
+              VALIDATED)
+                if [[ "$publish_requested" == false ]]; then
+                  code=$(curl --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 15 --max-time 120 \
+                    --silent --show-error --request POST --header "@$auth_file" --output /dev/null --write-out '%{http_code}' \
+                    "$portal_api/deployment/$deployment_id")
+                  test "$code" = 204
+                  publish_requested=true
+                fi
+                ;;
+              FAILED) echo "Maven Central rejected the exact deployment" >&2; exit 1 ;;
+            esac
+            test "$attempt" = 90 || sleep 20
+          done
+          test "$status" = PUBLISHED
+          record_sha256=$(sha256sum "$state_root/maven-central-deployment.json" | cut -d ' ' -f 1)
+          jq --null-input --arg intent_sha256 "$intent_sha256" --arg record_sha256 "$record_sha256" \
+            --arg name "$deployment_name" --arg id "$deployment_id" --argjson purls "$(jq .expected_purls "$intent")" '
+            {schema: "latchway.maven-central-deployment-status.v2", intent_sha256: $intent_sha256,
+             record_sha256: $record_sha256, record_kind: "portal_deployment", deployment_id: $id,
+             deployment_name: $name, deployment_state: "PUBLISHED", purls: ($purls | sort), public_manifest_sha256: null}
+          ' > "$state_root/maven-central-deployment-status.json"
+          rm -f -- "$auth_file"
+          trap - EXIT HUP INT TERM
+      - name: Transfer the durable Portal or adoption state to credential-free verification
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: latchway-android-central-state-${{ needs.promote.outputs.version }}
+          path: ${{ runner.temp }}/central-publication-state
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  verify-publication:
+    name: Verify public Maven bytes without registry or signing credentials
+    if: github.repository == 'Latchway/latchway-android'
+    needs: [promote, sign-central, publish-central]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: read
+    env:
+      RELEASE_COMMIT: ${{ needs.promote.outputs.commit }}
+      RELEASE_TAG: ${{ needs.promote.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.promote.outputs.version }}
+      LATCHWAY_CENTRAL_SIGNING_FINGERPRINT: ${{ vars.LATCHWAY_MAVEN_SIGNING_FINGERPRINT }}
+    steps:
+      - name: Check out exact verifier source without persisted credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.promote.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download exact signed inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: latchway-android-signed-candidate-${{ needs.promote.outputs.version }}
+          path: ${{ runner.temp }}/verification-inputs
+      - name: Download exact Central state
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: latchway-android-central-state-${{ needs.promote.outputs.version }}
+          path: ${{ runner.temp }}/central-state
+      - name: Reconstruct and verify only the reviewed repository archive
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rm -rf build/release
+          mkdir -p build/release/repository
+          input="$RUNNER_TEMP/verification-inputs"
+          archive="$input/latchway-android-$RELEASE_VERSION-maven-repository.zip"
+          python3 - "$archive" build/release/repository <<'PY'
+          import pathlib, stat, sys, zipfile
+          archive, output = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+          with zipfile.ZipFile(archive) as source:
+              for item in source.infolist():
+                  mode = (item.external_attr >> 16) & 0xFFFF
+                  if item.is_dir() or item.flag_bits & 1 or item.filename.startswith("/") or "\\" in item.filename or any(part in {"", ".", ".."} for part in item.filename.split("/")) or (mode and not stat.S_ISREG(mode)):
+                      raise SystemExit("unsafe Maven archive entry")
+                  target = output/item.filename
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  target.write_bytes(source.read(item))
+          PY
+          install -m 600 -- \
+            "$archive" \
+            "$input/latchway-android-$RELEASE_VERSION-central-portal.zip" \
+            "$input/latchway-maven-signing-public-key.asc" \
+            "$input/maven-central-upload-intent.json" \
+            "$input/github-release-tag-binding.json" \
+            build/release/
+          jq --exit-status --arg version "$RELEASE_VERSION" '
+            (keys | sort) == ["mode", "schema", "version"] and
+            .schema == "latchway.maven-central-publication-mode.v1" and
+            (.mode == "portal" or .mode == "adopt") and .version == $version
+          ' "$RUNNER_TEMP/central-state/publication-mode.json" >/dev/null
+          mode=$(jq --raw-output .mode "$RUNNER_TEMP/central-state/publication-mode.json")
+          if [[ "$mode" == portal ]]; then
+            install -m 600 -- \
+              "$RUNNER_TEMP/central-state/maven-central-deployment.json" \
+              "$RUNNER_TEMP/central-state/maven-central-deployment-status.json" \
+              build/release/
+            python3 scripts/central-deployment-record.py validate-record \
+              --intent build/release/maven-central-upload-intent.json \
+              --record build/release/maven-central-deployment.json >/dev/null
+          elif [[ "$mode" == adopt ]]; then
+            LATCHWAY_CENTRAL_EXPECTED_REPOSITORY="$GITHUB_WORKSPACE/build/release/repository" \
+              LATCHWAY_CENTRAL_SIGNING_PUBLIC_KEY="$GITHUB_WORKSPACE/build/release/latchway-maven-signing-public-key.asc" \
+              scripts/verify-central-release.sh "$RELEASE_VERSION" > "$RUNNER_TEMP/public-adoption-evidence.json"
+            python3 scripts/central-deployment-record.py create-adoption-record \
+              --intent build/release/maven-central-upload-intent.json \
+              --public-evidence "$RUNNER_TEMP/public-adoption-evidence.json" \
+              --output build/release/maven-central-deployment.json
+            python3 scripts/central-deployment-record.py create-adoption-status \
+              --intent build/release/maven-central-upload-intent.json \
+              --record build/release/maven-central-deployment.json \
+              --public-evidence "$RUNNER_TEMP/public-adoption-evidence.json" \
+              --output build/release/maven-central-deployment-status.json
+          fi
+      - name: Verify immutable public artifacts and durable deployment binding
         env:
           LATCHWAY_CENTRAL_EXPECTED_REPOSITORY: ${{ github.workspace }}/build/release/repository
           LATCHWAY_CENTRAL_SIGNING_PUBLIC_KEY: ${{ github.workspace }}/build/release/latchway-maven-signing-public-key.asc
@@ -462,17 +945,15 @@ jobs:
           LATCHWAY_CENTRAL_DEPLOYMENT_RECORD: ${{ github.workspace }}/build/release/maven-central-deployment.json
           LATCHWAY_CENTRAL_DEPLOYMENT_STATUS: ${{ github.workspace }}/build/release/maven-central-deployment-status.json
           LATCHWAY_CENTRAL_REQUIRE_DEPLOYMENT_EVIDENCE: "true"
-          LATCHWAY_RELEASE_VERSION: ${{ needs.promote.outputs.version }}
+        run: scripts/verify-central-release.sh "$RELEASE_VERSION" > build/release/maven-central-release-evidence.json
+      - name: Seal and stage the complete fixed-asset checksum manifest
+        shell: bash
         run: |
-          scripts/verify-central-release.sh "$LATCHWAY_RELEASE_VERSION" \
-            > build/release/maven-central-release-evidence.json
-      - name: Seal the complete fixed-asset checksum manifest
-        working-directory: build/release
-        run: |
-          set -euo pipefail
+          set -Eeuo pipefail
+          cd build/release
           sha256sum \
-            "latchway-android-${{ needs.promote.outputs.version }}-maven-repository.zip" \
-            "latchway-android-${{ needs.promote.outputs.version }}-central-portal.zip" \
+            "latchway-android-$RELEASE_VERSION-maven-repository.zip" \
+            "latchway-android-$RELEASE_VERSION-central-portal.zip" \
             github-release-tag-binding.json \
             latchway-maven-signing-public-key.asc \
             maven-central-upload-intent.json \
@@ -481,93 +962,237 @@ jobs:
             maven-central-release-evidence.json \
             > SHA256SUMS
           sha256sum --check --strict SHA256SUMS
-      - name: Attest the exact post-Central evidence
+          destination="$RUNNER_TEMP/android-release-assets"
+          mkdir -m 700 "$destination"
+          install -m 600 -- \
+            "latchway-android-$RELEASE_VERSION-maven-repository.zip" \
+            "latchway-android-$RELEASE_VERSION-central-portal.zip" \
+            SHA256SUMS github-release-tag-binding.json latchway-maven-signing-public-key.asc \
+            maven-central-upload-intent.json maven-central-deployment.json \
+            maven-central-deployment-status.json maven-central-release-evidence.json \
+            "$destination/"
+      - name: Transfer exact Android assets to immutable GitHub publication
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: latchway-android-github-release-${{ needs.promote.outputs.version }}
+          path: ${{ runner.temp }}/android-release-assets
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+
+  github-release-policy:
+    name: Re-verify immutable release policy without OIDC or candidate checkout
+    if: github.repository == 'Latchway/latchway-android'
+    needs: [promote, verify-publication]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: release-administration
+    permissions: {}
+    steps:
+      - name: Verify immutable releases remain enforced with the narrow admin token
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$GH_TOKEN"
+          settings=$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/immutable-releases")
+          unset GH_TOKEN
+          jq --exit-status '
+            type == "object" and
+            (keys | sort) == ["enabled", "enforced_by_owner"] and
+            .enabled == true and
+            (.enforced_by_owner | type) == "boolean"
+          ' <<<"$settings" >/dev/null
+
+  github-release:
+    name: Publish immutable GitHub release without candidate checkout
+    if: github.repository == 'Latchway/latchway-android'
+    needs: [promote, verify-publication, github-release-policy]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: github-release
+    permissions:
+      actions: read
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - name: Download exact Android release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: latchway-android-github-release-${{ needs.promote.outputs.version }}
+          path: ${{ runner.temp }}/android-release-assets
+      - name: Validate exact Android asset closure before OIDC attestation
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.promote.outputs.version }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          asset_root="$RUNNER_TEMP/android-release-assets"
+          expected=(
+            "latchway-android-$RELEASE_VERSION-maven-repository.zip"
+            "latchway-android-$RELEASE_VERSION-central-portal.zip"
+            SHA256SUMS
+            github-release-tag-binding.json
+            latchway-maven-signing-public-key.asc
+            maven-central-upload-intent.json
+            maven-central-deployment.json
+            maven-central-deployment-status.json
+            maven-central-release-evidence.json
+          )
+          shopt -s dotglob nullglob
+          actual=("$asset_root"/*)
+          test "${#actual[@]}" = "${#expected[@]}"
+          for asset in "${actual[@]}"; do
+            test -f "$asset"
+            test ! -L "$asset"
+            test -s "$asset"
+          done
+          printf '%s\n' "${expected[@]}" | LC_ALL=C sort > "$RUNNER_TEMP/expected-assets.txt"
+          printf '%s\n' "${actual[@]##*/}" | LC_ALL=C sort > "$RUNNER_TEMP/actual-assets.txt"
+          cmp --silent "$RUNNER_TEMP/expected-assets.txt" "$RUNNER_TEMP/actual-assets.txt"
+      - name: Attest exact Maven inputs and retained publication evidence without candidate checkout
         uses: actions/attest-build-provenance@e4d4f7c39adfa4c260fb5c147f0622000aa14b99 # v4.0.0
         with:
-          subject-path: |
-            build/release/maven-central-deployment.json
-            build/release/maven-central-deployment-status.json
-            build/release/maven-central-release-evidence.json
-            build/release/github-release-tag-binding.json
-            build/release/SHA256SUMS
-      - name: Attach every fixed asset, publish, and require immutability
+          subject-path: ${{ runner.temp }}/android-release-assets/*
+      - name: Reconcile, publish, and verify immutable release with fixed API calls
+        shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
-          LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN: ${{ secrets.LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN }}
+          RELEASE_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ needs.promote.outputs.commit }}
+          RELEASE_TAG: ${{ needs.promote.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.promote.outputs.version }}
+          CORE_TAG: ${{ needs.promote.outputs.core_tag }}
+          REPORT_SHA256: ${{ needs.promote.outputs.report_sha256 }}
         run: |
-          python3 scripts/reconcile-github-release.py \
-            --repository "$GITHUB_REPOSITORY" \
-            --tag "$RELEASE_TAG" \
-            --title "$RELEASE_TAG" \
-            --expected-commit "$RELEASE_COMMIT" \
-            --expected-tag-message-file "$RUNNER_TEMP/sdk-tag-message.txt" \
-            --tag-binding-output build/release/github-release-tag-binding.json \
-            "build/release/latchway-android-${{ needs.promote.outputs.version }}-maven-repository.zip" \
-            "build/release/latchway-android-${{ needs.promote.outputs.version }}-central-portal.zip" \
-            build/release/SHA256SUMS \
-            build/release/github-release-tag-binding.json \
-            build/release/latchway-maven-signing-public-key.asc \
-            build/release/maven-central-upload-intent.json \
-            build/release/maven-central-deployment.json \
-            build/release/maven-central-deployment-status.json \
-            build/release/maven-central-release-evidence.json
-      - name: Verify GitHub automatic release and per-asset attestations
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          attestation_dir="$RUNNER_TEMP/github-release-attestations"
-          mkdir -p "$attestation_dir"
+          set -Eeuo pipefail
+          test -n "$RELEASE_TOKEN"
+          [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          test "$RELEASE_TAG" = "v$RELEASE_VERSION"
+          [[ "$REPORT_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          version_line=$(gh version | head -n 1)
+          [[ "$version_line" =~ ^gh[[:space:]]version[[:space:]]([0-9]+)\.([0-9]+)\.([0-9]+)([[:space:]]\([^()]+\))?$ ]]
+          major=${BASH_REMATCH[1]}; minor=${BASH_REMATCH[2]}; patch=${BASH_REMATCH[3]}
+          (( major > 2 || (major == 2 && (minor > 97 || (minor == 97 && patch >= 0))) ))
+          gh release verify --help | grep --fixed-strings -- '--format' >/dev/null
+          gh release verify-asset --help | grep --fixed-strings -- '--format' >/dev/null
+          export GH_TOKEN="$RELEASE_TOKEN"
+          unset RELEASE_TOKEN
+
+          asset_root="$RUNNER_TEMP/android-release-assets"
+          assets=(
+            "$asset_root/latchway-android-$RELEASE_VERSION-maven-repository.zip"
+            "$asset_root/latchway-android-$RELEASE_VERSION-central-portal.zip"
+            "$asset_root/SHA256SUMS"
+            "$asset_root/github-release-tag-binding.json"
+            "$asset_root/latchway-maven-signing-public-key.asc"
+            "$asset_root/maven-central-upload-intent.json"
+            "$asset_root/maven-central-deployment.json"
+            "$asset_root/maven-central-deployment-status.json"
+            "$asset_root/maven-central-release-evidence.json"
+          )
+          : > "$RUNNER_TEMP/expected-assets.txt"
+          for asset in "${assets[@]}"; do
+            test -f "$asset"
+            test ! -L "$asset"
+            test -s "$asset"
+            printf '%s\n' "${asset##*/}" >> "$RUNNER_TEMP/expected-assets.txt"
+          done
+          test "$(sort -u "$RUNNER_TEMP/expected-assets.txt" | wc -l | tr -d ' ')" = 9
+          expected_names=$(sort "$RUNNER_TEMP/expected-assets.txt" | jq --raw-input --slurp 'split("\n")[:-1]')
+
+          message="Android SDK $RELEASE_TAG
+
+          Core promotion: $CORE_TAG
+          Promotion evidence SHA-256: $REPORT_SHA256"
+          message_sha256=$(printf '%s' "$message" | sha256sum | cut -d ' ' -f 1)
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" > "$RUNNER_TEMP/tag-ref.json"
+          tag_object=$(jq --raw-output '.object.sha | select(type == "string" and test("^[0-9a-f]{40}$"))' "$RUNNER_TEMP/tag-ref.json")
+          test "$(jq --raw-output .object.type "$RUNNER_TEMP/tag-ref.json")" = tag
+          gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object" > "$RUNNER_TEMP/tag-object.json"
+          jq --exit-status --arg tag "$RELEASE_TAG" --arg commit "$RELEASE_COMMIT" --arg message "$message" \
+            '.tag == $tag and .object.type == "commit" and .object.sha == $commit and .message == $message' \
+            "$RUNNER_TEMP/tag-object.json" >/dev/null
+          jq --exit-status --arg tag "$RELEASE_TAG" --arg object "$tag_object" \
+            --arg commit "$RELEASE_COMMIT" --arg message_sha256 "$message_sha256" '
+            (keys | sort) == ["commit", "message_sha256", "schema", "tag", "tag_object_sha"] and
+            .schema == "latchway.github-release-tag-binding.v1" and .tag == $tag and
+            .tag_object_sha == $object and .commit == $commit and .message_sha256 == $message_sha256
+          ' "$asset_root/github-release-tag-binding.json" >/dev/null
+
+          lookup_release() {
+            set +e
+            gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+              > "$RUNNER_TEMP/release.json" 2> "$RUNNER_TEMP/release-error.txt"
+            local status=$?
+            set -e
+            return "$status"
+          }
+          if ! lookup_release; then
+            grep --fixed-strings --quiet 'HTTP 404' "$RUNNER_TEMP/release-error.txt"
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --verify-tag --draft --generate-notes --title "$RELEASE_TAG"
+            lookup_release
+          fi
+          validate_release() {
+            local allow_draft=$1
+            jq --exit-status --arg tag "$RELEASE_TAG" --argjson names "$expected_names" \
+              --argjson allow_draft "$allow_draft" '
+              .tag_name == $tag and .name == $tag and .prerelease == false and
+              (.draft | type) == "boolean" and (.immutable | type) == "boolean" and
+              ($allow_draft or .draft == false) and
+              ((.draft == true and .immutable == false) or (.draft == false and .immutable == true)) and
+              ([.assets[].name] | sort) as $observed |
+              ($observed | length) == ($observed | unique | length) and
+              ($observed - $names | length) == 0
+            ' "$RUNNER_TEMP/release.json" >/dev/null
+          }
+          validate_release true
+          for asset in "${assets[@]}"; do
+            name=${asset##*/}
+            count=$(jq --arg name "$name" '[.assets[] | select(.name == $name)] | length' "$RUNNER_TEMP/release.json")
+            test "$count" -le 1
+            if [[ "$count" -eq 1 ]]; then
+              remote_id=$(jq --raw-output --arg name "$name" '.assets[] | select(.name == $name) | .id' "$RUNNER_TEMP/release.json")
+              remote_size=$(jq --raw-output --arg name "$name" '.assets[] | select(.name == $name) | .size' "$RUNNER_TEMP/release.json")
+              test "$remote_size" = "$(wc -c < "$asset" | tr -d ' ')"
+              gh api --method GET -H 'Accept: application/octet-stream' \
+                "repos/$GITHUB_REPOSITORY/releases/assets/$remote_id" > "$RUNNER_TEMP/existing-$name"
+              cmp --silent "$asset" "$RUNNER_TEMP/existing-$name"
+            else
+              test "$(jq --raw-output .draft "$RUNNER_TEMP/release.json")" = true
+              gh release upload "$RELEASE_TAG" "$asset" --repo "$GITHUB_REPOSITORY"
+            fi
+          done
+          lookup_release
+          validate_release true
+          test "$(jq --argjson names "$expected_names" '[.assets[].name] | sort == $names' "$RUNNER_TEMP/release.json")" = true
+          if [[ "$(jq --raw-output .draft "$RUNNER_TEMP/release.json")" == true ]]; then
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease=false --latest
+          fi
+          lookup_release
+          validate_release false
+          test "$(jq --argjson names "$expected_names" '[.assets[].name] | sort == $names' "$RUNNER_TEMP/release.json")" = true
           verified=false
           for attempt in $(seq 1 12); do
             if gh release verify "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --format json \
-              > "$attestation_dir/release.json"; then
-              verified=true
-              break
-            fi
+              > "$RUNNER_TEMP/release-attestation.json"; then verified=true; break; fi
             test "$attempt" = 12 || sleep 10
           done
           test "$verified" = true
-          jq -e '(type == "object" and length > 0) or (type == "array" and length > 0)' \
-            "$attestation_dir/release.json" >/dev/null
-
-          assets=(
-            "build/release/latchway-android-${{ needs.promote.outputs.version }}-maven-repository.zip"
-            "build/release/latchway-android-${{ needs.promote.outputs.version }}-central-portal.zip"
-            build/release/SHA256SUMS
-            build/release/github-release-tag-binding.json
-            build/release/latchway-maven-signing-public-key.asc
-            build/release/maven-central-upload-intent.json
-            build/release/maven-central-deployment.json
-            build/release/maven-central-deployment-status.json
-            build/release/maven-central-release-evidence.json
-          )
           for asset in "${assets[@]}"; do
-            proof="$attestation_dir/$(basename "$asset").json"
             verified=false
             for attempt in $(seq 1 12); do
-              if gh release verify-asset "$RELEASE_TAG" "$asset" \
-                --repo "$GITHUB_REPOSITORY" --format json > "$proof"; then
-                verified=true
-                break
-              fi
+              if gh release verify-asset "$RELEASE_TAG" "$asset" --repo "$GITHUB_REPOSITORY" --format json \
+                > "$RUNNER_TEMP/${asset##*/}.attestation.json"; then verified=true; break; fi
               test "$attempt" = 12 || sleep 10
             done
             test "$verified" = true
-            jq -e '(type == "object" and length > 0) or (type == "array" and length > 0)' "$proof" >/dev/null
           done
-          python3 scripts/verify-github-release-attestation.py \
-            --release-json "$attestation_dir/release.json" \
-            --tag-binding build/release/github-release-tag-binding.json \
-            --repository "$GITHUB_REPOSITORY" \
-            --tag "$RELEASE_TAG" \
-            --commit "$RELEASE_COMMIT" \
-            --tag-message-file "$RUNNER_TEMP/sdk-tag-message.txt" \
-            > "$attestation_dir/release-commit-binding.json"
-      - name: Retain exact GitHub release attestation verification
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: latchway-android-${{ needs.promote.outputs.version }}-github-release-attestations
-          path: ${{ runner.temp }}/github-release-attestations
-          if-no-files-found: error
-          retention-days: 90

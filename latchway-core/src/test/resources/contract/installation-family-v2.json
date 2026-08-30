@@ -1,0 +1,168 @@
+{
+  "format_version": 1,
+  "contract_version": "1.0.0",
+  "wire_protocol_version": 2,
+  "family": {
+    "id": "fam_01J00000000000000000000000",
+    "status": "active"
+  },
+  "root_component": {
+    "id": "cmp_01J00000000000000000000000",
+    "definition_id": "ios_main",
+    "kind": "main_app",
+    "platform": "ios",
+    "is_root": true,
+    "status": "active",
+    "dpop_jkt": "bX0yCl562RPdpf8cJHVLBeUXu6PWExYJ0w-Bydre3q8",
+    "granted_features": ["habit_assistant", "journal_analysis"]
+  },
+  "root_session_claims": {
+    "installation_family_id": "fam_01J00000000000000000000000",
+    "client_component_id": "cmp_01J00000000000000000000000",
+    "component_definition_id": "ios_main",
+    "component_kind": "main_app",
+    "component_is_root": true,
+    "granted_features": ["habit_assistant", "journal_analysis"],
+    "trust_source": "direct_attested"
+  },
+  "provisioned_components": [
+    {
+      "id": "provision_widget",
+      "request": {
+        "component_definition_id": "ios_widget",
+        "public_jwk": {
+          "kty": "EC",
+          "crv": "P-256",
+          "x": "Cq0dYDxoGL4oLYM_cwDclqKoVgkU5OeuoXo_L4Z418s",
+          "y": "N5wrFgi5unJsGvU57MC-o4Iv5VHL-V6Sl9_2AcOS6cI"
+        },
+        "requested_features": ["habit_assistant"],
+        "client_metadata": {
+          "app_version": "1.0.0",
+          "sdk_version": "1.0.0"
+        }
+      },
+      "response": {
+        "component_id": "cmp_01J00000000000000000000001",
+        "installation_family_id": "fam_01J00000000000000000000000",
+        "trust": {
+          "provider": "app_attest",
+          "level": "device_verified",
+          "source": "delegated_from_attested_root",
+          "verified_at": "2026-08-30T00:00:00Z",
+          "expires_at": "2026-08-30T00:10:00Z",
+          "parent_component_id": "cmp_01J00000000000000000000000",
+          "parent_attestation_provider": "app_attest",
+          "delegation_id": "dlg_01J00000000000000000000001"
+        },
+        "granted_features": ["habit_assistant"],
+        "refresh_grant": "crf_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "refresh_grant_expires_at": "2026-08-30T00:10:00Z"
+      },
+      "session_exchange": {
+        "request": {
+          "component_id": "cmp_01J00000000000000000000001",
+          "refresh_grant": "crf_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        },
+        "response": {
+          "access_token": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "expires_in": 300,
+          "refresh_token": "crf_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+          "refresh_expires_at": "2026-08-30T00:10:00Z"
+        }
+      },
+      "expected_session_claims": {
+        "installation_family_id": "fam_01J00000000000000000000000",
+        "client_component_id": "cmp_01J00000000000000000000001",
+        "component_definition_id": "ios_widget",
+        "component_kind": "widget",
+        "component_is_root": false,
+        "granted_features": ["habit_assistant"],
+        "trust_source": "delegated_from_attested_root",
+        "parent_component_id": "cmp_01J00000000000000000000000",
+        "delegation_id": "dlg_01J00000000000000000000001"
+      }
+    },
+    {
+      "id": "provision_share_extension",
+      "request": {
+        "component_definition_id": "ios_share",
+        "public_jwk": {
+          "kty": "EC",
+          "crv": "P-256",
+          "x": "f83OJ3D2xF4XWjY46PmfJy4r5HzSnfcw0NKNUugmucg",
+          "y": "x_FEzRu9m36HLNFEdCWEJgFAHAK1Z7pPTwM4dW6mL6w"
+        },
+        "requested_features": ["journal_analysis"],
+        "client_metadata": {
+          "app_version": "1.0.0",
+          "sdk_version": "1.0.0"
+        }
+      },
+      "response": {
+        "component_id": "cmp_01J00000000000000000000002",
+        "installation_family_id": "fam_01J00000000000000000000000",
+        "trust": {
+          "provider": "app_attest",
+          "level": "device_verified",
+          "source": "delegated_from_attested_root",
+          "verified_at": "2026-08-30T00:00:00Z",
+          "expires_at": "2026-08-30T00:10:00Z",
+          "parent_component_id": "cmp_01J00000000000000000000000",
+          "parent_attestation_provider": "app_attest",
+          "delegation_id": "dlg_01J00000000000000000000002"
+        },
+        "granted_features": ["journal_analysis"],
+        "refresh_grant": "crf_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+        "refresh_grant_expires_at": "2026-08-30T00:10:00Z"
+      },
+      "session_exchange": {
+        "request": {
+          "component_id": "cmp_01J00000000000000000000002",
+          "refresh_grant": "crf_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+        },
+        "response": {
+          "access_token": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+          "expires_in": 300,
+          "refresh_token": "crf_DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+          "refresh_expires_at": "2026-08-30T00:10:00Z"
+        }
+      },
+      "expected_session_claims": {
+        "installation_family_id": "fam_01J00000000000000000000000",
+        "client_component_id": "cmp_01J00000000000000000000002",
+        "component_definition_id": "ios_share",
+        "component_kind": "share_extension",
+        "component_is_root": false,
+        "granted_features": ["journal_analysis"],
+        "trust_source": "delegated_from_attested_root",
+        "parent_component_id": "cmp_01J00000000000000000000000",
+        "delegation_id": "dlg_01J00000000000000000000002"
+      }
+    }
+  ],
+  "revocations": [
+    {
+      "id": "revoke_one_sibling",
+      "scope": "component",
+      "target_id": "cmp_01J00000000000000000000001",
+      "expected_family_status": "active",
+      "expected_components": [
+        { "component_id": "cmp_01J00000000000000000000000", "status": "active" },
+        { "component_id": "cmp_01J00000000000000000000001", "status": "revoked" },
+        { "component_id": "cmp_01J00000000000000000000002", "status": "active" }
+      ]
+    },
+    {
+      "id": "revoke_entire_family",
+      "scope": "family",
+      "target_id": "fam_01J00000000000000000000000",
+      "expected_family_status": "revoked",
+      "expected_components": [
+        { "component_id": "cmp_01J00000000000000000000000", "status": "revoked" },
+        { "component_id": "cmp_01J00000000000000000000001", "status": "revoked" },
+        { "component_id": "cmp_01J00000000000000000000002", "status": "revoked" }
+      ]
+    }
+  ]
+}

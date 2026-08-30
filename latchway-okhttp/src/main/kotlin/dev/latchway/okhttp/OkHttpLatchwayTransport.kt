@@ -53,13 +53,14 @@ public class OkHttpLatchwayTransport(
                     if (continuation.isActive) continuation.resumeWithException(e)
                 }
 
+                @Suppress("UNNECESSARY_SAFE_CALL") // Response.body is nullable in supported OkHttp 4.x.
                 override fun onResponse(call: Call, response: Response) {
                     try {
                         val result = response.use {
                             LatchwayTransportResponse(
                                 statusCode = it.code,
                                 headers = it.headers.toMultimap(),
-                                body = it.body.byteStream().use(::readBounded),
+                                body = it.body?.byteStream()?.use(::readBounded) ?: ByteArray(0),
                             )
                         }
                         if (continuation.isActive) continuation.resume(result)

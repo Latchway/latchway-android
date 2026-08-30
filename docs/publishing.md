@@ -51,8 +51,8 @@ Before running it:
 2. Generate a Publisher Portal user token.
 3. Provision an OpenPGP key whose public key is available from a supported key
    server.
-   Store its uppercase 40-character fingerprint in the protected
-   `LATCHWAY_MAVEN_SIGNING_FINGERPRINT` environment variable. The release
+   Store its uppercase 40-character fingerprint in the repository or
+   organization Actions variable `LATCHWAY_MAVEN_SIGNING_FINGERPRINT`. The release
    workflow exports only the minimal public half as an attested immutable
    release asset; private signing material is never written to the repository
    or release assets.
@@ -71,6 +71,15 @@ LATCHWAY_SIGNING_KEY
 LATCHWAY_SIGNING_PASSWORD
 LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN
 ```
+
+CI keeps those inputs in separate protected environments. The unprivileged
+`package` job receives none of them. `maven-central-signing` supplies only the
+private OpenPGP key and password to a fresh no-checkout signing job;
+`maven-central` supplies only the Portal username and password to a different
+fresh no-checkout network publisher; `release-administration` supplies only the
+read-only administration token; and `github-release` protects the final
+GitHub-token/OIDC publication. Each environment should require an authorized
+reviewer. Do not duplicate one environment's secrets into another.
 
 `LATCHWAY_SIGNING_KEY` is the ASCII-armored private key, not a key-ring path.
 Gradle user-home properties remain supported only for controlled local signing
@@ -130,24 +139,32 @@ Set `LATCHWAY_CENTRAL_INTENT_FRESH=false` on every continuation. Copy the
 deployment record to durable storage immediately after the upload returns. Do
 not pass signing variables to `publish-central.sh`; it rejects them.
 
-The signing-only bundle builder adds detached signatures using an explicitly
-pinned SHA-512 digest and an approved RSA, ECDSA, or EdDSA signing algorithm.
-It verifies every GnuPG machine-status record, including the selected-key flag,
-before the network publisher can receive Portal credentials. The intent
-validator proves a closed 120-file repository allowlist, every checksum's
-contents, exact unsigned-ZIP equivalence, and an exact 144-file signed Portal
-ZIP with no duplicates, links, unsafe entries, or extras. The publisher uploads
-that pre-reviewed bundle through Sonatype's documented
+The CI signing job accepts only the closed 120-file unsigned repository ZIP. A
+fixed inline verifier rejects duplicates, links, unsafe paths, encrypted
+entries, size-limit violations, missing or extra files, and any checksum
+mismatch before extraction. The job never checks out candidate source, runs
+Gradle, loads a Maven plugin, or executes a downloaded JAR, AAR, POM, or script.
+It adds detached signatures to the 24 fixed primary artifacts using the pinned
+SHA-512 digest, checks every signature against the pinned primary fingerprint,
+exports only the public key, destroys the temporary keyring, and then creates
+the exact 144-file Portal ZIP and immutable upload intent.
+
+The separate Portal publisher again proves closed-set equivalence between the
+unsigned and signed archives and verifies every detached signature using only
+the public key. It has no checkout, signing material, GitHub administration
+token, OIDC permission, Gradle, Java, or repository scripts; downloaded package
+bytes are parsed only as bounded archive data and can never run while Portal
+credentials exist. It uploads that pre-reviewed bundle through Sonatype's documented
 [Portal Publisher API](https://central.sonatype.org/publish/publish-portal-api/).
 The API returns an exact deployment UUID. That UUID is bound to the source
 commit, both reviewed ZIPs, public key, expected PURLs, and immutable intent
 before the workflow waits on the deployment.
 
-All releases use `USER_MANAGED`. The first workflow phase stages or adopts the
-deterministically named deployment and attaches its UUID to the GitHub draft.
-Only a later phase, after that durable attachment, sets
-`LATCHWAY_CENTRAL_PUBLISH_AFTER_VALIDATION=true` and invokes the exact recorded
-UUID's publish endpoint. It then waits for Maven Central,
+All releases use `USER_MANAGED`. The publisher first queries the complete public
+coordinate set and otherwise stages or adopts the deterministically named
+Portal deployment before invoking only that exact UUID's publish endpoint. It
+persists the normalized deployment record and final status as a short-lived
+workflow artifact, then a credential-free verifier waits for Maven Central,
 downloads every POM, Gradle module, AAR, sources JAR, and Javadoc JAR, compares
 every primary artifact and MD5/SHA-1/SHA-256/SHA-512 sidecar byte for byte with
 the reproducible repository assembled earlier in the run, and cryptographically
@@ -155,16 +172,18 @@ verifies every detached OpenPGP signature against the reviewed public key and
 pinned primary fingerprint. GnuPG output is parsed fail-closed: revoked,
 expired, bad, unknown, ambiguous, or wrong-primary status is rejected.
 
-Before the first Portal request, the workflow requires GitHub immutable
-releases to be enabled, validates the exact remote annotated tag object,
-target commit, and promotion-derived message, creates or resumes a draft,
-predeclares the complete fixed asset set, and attaches the intent, signed
-Portal ZIP, and tag-binding proof. It then durably attaches
-the deployment record before waiting. Post-registry evidence retains hashes of
+Before the first Portal request, an independent fresh no-checkout administration
+job requires GitHub immutable releases to be enabled. Candidate validation
+binds the exact annotated tag object, target commit, and promotion-derived
+message without publication credentials. Post-registry evidence retains hashes of
 every artifact and checksum sidecar, every exact armored signature, normalized
 GnuPG status, the reviewed public-key hash, and the deployment record/status.
 Only after those files exist does the workflow seal `SHA256SUMS` over all eight
-other fixed assets, attest that manifest, and attach it to the draft.
+other fixed assets. A separate fresh no-checkout OIDC job attests the exact nine
+assets, creates or resumes the fixed-asset draft, and attaches them.
+Immediately before that OIDC job, a second no-OIDC administration job rechecks
+the immutable-release policy; the attesting job also rejects any missing, extra,
+empty, non-regular, or symlinked local asset before requesting an identity token.
 Only after every asset is attached does it publish the GitHub release, and it
 requires the release API to report `immutable: true`. It then runs
 `gh release verify TAG --format json` and `gh release verify-asset TAG PATH
@@ -180,12 +199,12 @@ and subject digest to name that exact annotated tag object. The raw release and
 per-asset verification JSON plus normalized commit-binding proof are retained
 as a 90-day workflow artifact.
 
-The `maven-central` GitHub environment must protect all five release secrets and
-require an authorized reviewer. `LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN` is a
-short-lived, least-privilege fine-grained token used only by the protected
-preflight and read-only reconciliation checks for the repository immutable-
-release administration setting; ordinary release mutations still use
-`github.token`. Keep the administration token out of build and signing steps.
+The four protected environments described above must be configured before the
+workflow can run. `LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN` is a short-lived,
+least-privilege fine-grained token used only by the protected no-checkout
+preflight for the repository immutable-release administration setting;
+ordinary release mutations still use `github.token`. Keep the administration
+token out of build, signing, registry, and OIDC jobs.
 The release tag must be annotated,
 must identify the checked-out commit, and must exactly match the source SDK
 version. `contract.lock` must identify a released core contract, and the

@@ -27,6 +27,8 @@ client boundary.
 All Android libraries require API 23 or newer. The build uses AGP 9.3.2,
 Gradle 9.5.0, Kotlin 2.3.21, Java 17 bytecode, OkHttp 5.3.0, Play Integrity
 1.6.0, and the Firebase 34.18.0 BOM.
+CI also runs the adapter suite against the supported 4.9.2 minimum; the
+full unit, streaming, cancellation, and replay suite runs on pinned 5.3.0.
 
 ## Usage
 
@@ -73,6 +75,16 @@ val http = OkHttpClient.Builder()
     .build()
 ```
 
+The OkHttp adapter declares the tested `android-okhttp` framework and exact
+OkHttp version as a header pair. It authorizes only the contract-owned data
+routes (`/v1/responses`, `/v1/chat/completions`, `/v1/embeddings`,
+`/v1/messages`, and feature-bound `/proxy/...` routes). The required network
+interceptor revalidates the destination and creates a fresh DPoP proof for
+every permitted network attempt. An internal second connection attempt is
+rejected as indeterminate instead of replaying a request that may have reached
+the upstream; an explicit contract-safe nonce/session follow-up or a new
+framework call receives a fresh proof.
+
 For per-request routing, use `request.newBuilder().latchwayFeature("feature")`
 or call `latchway.authorize(request, feature)` directly. Credentials are only
 attached when the request origin exactly matches the configured gateway.
@@ -86,6 +98,49 @@ Its bridge must set
 React Native package semver as `sdkVersion`; this emits the contract-owned
 `react_native_android` platform and `react-native` SDK header while keeping
 protocol credentials out of JavaScript.
+
+Every established Android installation is represented by an Installation
+Family whose directly attested Android application is the root component.
+Additional Android components are never created from caller-supplied kinds or
+package identities; the containing app can request only a server-configured
+Component Definition and a bounded feature subset:
+
+```kotlin
+val worker = latchway.provisionComponent(
+    definitionId = "background-worker",
+    requestedFeatures = setOf("weekly-summary"),
+)
+
+val headers = worker.authorize(
+    method = "POST",
+    uri = URI("https://gateway.example.com/v1/responses"),
+    feature = "weekly-summary",
+)
+
+val workerHttp = OkHttpClient.Builder()
+    .addInterceptor(latchway.interceptor(worker))
+    .addNetworkInterceptor(latchway.originGuard())
+    .authenticator(latchway.authenticator())
+    .build()
+```
+
+Provisioning generates a distinct non-exportable Android Keystore P-256 key,
+consumes the returned component grant natively, immediately rotates it into a
+fully described independent component session, and AES-GCM encrypts that
+component's refresh chain under a separate Keystore wrapping key. Public
+results and diagnostics never contain token values. `openComponent()` resumes
+the encrypted native state; `revokeComponent()` destroys only that component's
+state and key, while `revokeCurrentInstallationFamily()` retires the root and
+all locally registered descendants. The server remains authoritative and
+rejects unconfigured definitions, invalid parent trust, feature escalation,
+key replacement, and revoked families.
+Component failures use the contract error codes and expose only safe recovery
+metadata (`recoveryAction`, `containingAppCanResolve`,
+`userAuthenticationRequired`, and `retryingImmediatelyUseful`).
+The component interceptor keeps the native component reference on an in-memory
+OkHttp request tag, re-signs with that component at each permitted network
+attempt and safe authenticator follow-up, and never exposes its key or rotating
+session chain to a provider request model.
 
 `KeyPolicy` requires hardware backing by default. Set
 `allowSoftwareBacked = true` only for an explicit environment policy such as a
@@ -106,6 +161,8 @@ their key and report replacement-key liveness during terminal revocation.
   configured Play cloud project before requesting an integrity token
 - Exchange an existing application identity token for short-lived,
   device-bound Latchway sessions
+- Give every configured client component its own P-256 key, DPoP identity,
+  refresh chain, feature scope, trust provenance, and revocation lifecycle
 - Provide direct request authorization plus safe OkHttp interceptor and
   authenticator integrations
 - Replace caller Authorization with Latchway DPoP authorization and reject
@@ -126,7 +183,7 @@ authorization by an application interceptor or cookie jar before dispatch;
 final cross-origin responses are never trusted for destructive revocation
 cleanup even if the guard is omitted.
 Canonical HTTP 403 `installation_revoked` responses are observed without
-replaying the request and trigger terminal local cleanup. Contract 0.5.1
+replaying the request and trigger terminal local cleanup. Contract 1.0.0
 `operation_indeterminate` exceptions retain their required `operationId` for
 operator reconciliation.
 
@@ -137,10 +194,14 @@ registry, protocol manifest, canonical attestation binding, DPoP vectors, and
 compatibility rules. This SDK consumes a signed and checksummed contract bundle;
 it does not define an independent wire protocol.
 
-[`contract.lock`](contract.lock) pins contract `0.5.1`, wire protocol `1`, the
+[`contract.lock`](contract.lock) pins draft contract `1.0.0`, current wire
+protocol `2`, the
 exact core checkpoint and bundle checksum, and server compatibility from
 `1.0.0` through the tested `1.0.x` series. The authoritative protocol manifest,
-DPoP vectors, and attestation-binding vectors are vendored as test resources. See
+DPoP, attestation-binding, and Installation Family v2 vectors are vendored as
+test resources. The gateway retains wire protocol `1` for legacy SDKs; this
+source candidate always sends protocol `2`, which is required for Installation
+Family and Client Component operations. See
 [Architecture](docs/architecture.md) for the dependency and trust boundaries.
 
 ## Security model
@@ -204,7 +265,10 @@ isolated local repository and compile independent offline Android consumers
 through both Gradle module metadata and Maven POM metadata.
 See [Publishing](docs/publishing.md) for the single-upload Central Portal
 procedure, durable deployment-ID recovery, fail-closed OpenPGP verification,
-and immutable GitHub release evidence.
+and immutable GitHub release evidence. CI builds the closed Maven repository
+without credentials, signs it on a fresh no-checkout runner, and publishes it
+from a different no-checkout runner that has Portal credentials but no private
+key, candidate checkout, Gradle/Java execution, administration token, or OIDC.
 
 ## License
 

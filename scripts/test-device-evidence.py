@@ -57,7 +57,7 @@ def profile() -> dict:
             "core_commit": expected["core_commit"],
             "worktree_clean": True,
             "sdk_version": "0.1.0",
-            "contract_version": "0.5.1",
+            "contract_version": "1.0.0",
             "contract_bundle_sha256": expected["contract_bundle_sha256"],
             "gateway_image_digest": expected["gateway_image_digest"],
             "gateway_configuration_sha256": expected["gateway_configuration_sha256"],

@@ -8,22 +8,200 @@ on:
         required: true
         type: string
 
-permissions:
-  contents: read
-  id-token: write
-  attestations: write
+permissions: {}
 
 concurrency:
   group: physical-play-integrity-production
   cancel-in-progress: false
 
 jobs:
+  authorize-source:
+    name: Authorize exact Android source without executing candidate code
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      artifact-metadata: write
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out exact Android source as data
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.source_commit }}
+          persist-credentials: false
+      - name: Create the run-bound source authorization without executing repository code
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -Eeuo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_SHA" = "$SOURCE_COMMIT"
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          root="$RUNNER_TEMP/latchway-play-integrity-source"
+          install -d -m 0700 "$root"
+          tree=$(git rev-parse 'HEAD^{tree}')
+          [[ "$tree" =~ ^[0-9a-f]{40,64}$ ]]
+          jq -n -S \
+            --arg repository "$GITHUB_REPOSITORY" --arg commit "$SOURCE_COMMIT" \
+            --arg tree "$tree" --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" --arg ref "$GITHUB_REF" \
+            '{schema_version:"latchway.physical-source-authorization.v1",repository:$repository,source:{commit:$commit,tree:$tree},workflow:{run_id:$run_id,run_attempt:$run_attempt,ref:$ref},audiences:["android-play-integrity"]}' \
+            > "$root/source-authorization.json"
+          jq --exit-status \
+            --arg repository "$GITHUB_REPOSITORY" --arg commit "$SOURCE_COMMIT" \
+            --arg tree "$tree" --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" '
+              .schema_version == "latchway.physical-source-authorization.v1" and
+              .repository == $repository and .source == {commit:$commit,tree:$tree} and
+              .workflow == {run_id:$run_id,run_attempt:$run_attempt,ref:"refs/heads/main"} and
+              .audiences == ["android-play-integrity"]
+            ' "$root/source-authorization.json" >/dev/null
+      - name: Attest the exact run-bound source authorization
+        id: source-attest
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: ${{ runner.temp }}/latchway-play-integrity-source/source-authorization.json
+      - name: Close the source authorization handoff
+        env:
+          BUNDLE_PATH: ${{ steps.source-attest.outputs.bundle-path }}
+        run: |
+          set -Eeuo pipefail
+          root="$RUNNER_TEMP/latchway-play-integrity-source"
+          test -f "$BUNDLE_PATH" && test ! -L "$BUNDLE_PATH"
+          install -m 0600 -- "$BUNDLE_PATH" "$root/source-authorization.sigstore.json"
+          cd "$root"
+          sha256sum source-authorization.json source-authorization.sigstore.json > SHA256SUMS
+          test "$(find . -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" = 3
+          test -z "$(find . -mindepth 1 ! -type f -print -quit)"
+      - name: Retain the one-run source authorization
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: play-integrity-source-authorization-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/latchway-play-integrity-source/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
   play-integrity-production:
     name: Production Play Integrity on physical Android hardware
+    needs: authorize-source
     environment: play-integrity-production
-    runs-on: [self-hosted, Linux, latchway-physical-android]
+    runs-on: [self-hosted, Linux, latchway-physical-android, latchway-ephemeral-jit]
     timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: read
     steps:
+      - name: Verify the fresh one-job collector lease before receiving source
+        shell: bash
+        env:
+          COLLECTOR_TRUST_ROOT_PEM: ${{ vars.LATCHWAY_COLLECTOR_TRUST_ROOT_PEM }}
+          COLLECTOR_TRUST_ROOT_SHA256: ${{ vars.LATCHWAY_COLLECTOR_TRUST_ROOT_SHA256 }}
+          DEVICE_GRANT_SHA256: ${{ vars.LATCHWAY_DEVICE_GRANT_SHA256 }}
+          EXPECTED_ARTIFACT_SHA256: ${{ vars.LATCHWAY_ANDROID_INSTALLED_APK_SET_SHA256 }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -Eeuo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$RUNNER_NAME" = "latchway-android-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test -z "$(find "$GITHUB_WORKSPACE" -mindepth 1 -print -quit)"
+          if env | grep -Eq '^(ACTIONS_ID_TOKEN_REQUEST_URL|ACTIONS_ID_TOKEN_REQUEST_TOKEN|GITHUB_TOKEN|GH_TOKEN|NPM_TOKEN|NODE_AUTH_TOKEN|DOCKER_AUTH_CONFIG|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|GOOGLE_APPLICATION_CREDENTIALS|AZURE_CLIENT_SECRET|CLOUDFLARE_API_TOKEN)='; then
+            echo "prohibited credential class is present on physical collector" >&2
+            exit 1
+          fi
+          lease=/etc/latchway/physical-collector/lease.json
+          signature=/etc/latchway/physical-collector/lease.sig
+          hook=/usr/local/libexec/latchway-physical-collector-finalize
+          for path in "$lease" "$signature" "$hook"; do
+            test -f "$path" && test ! -L "$path"
+            test "$(stat -c '%U' "$path")" = root
+            mode=$(stat -c '%a' "$path")
+            (( (8#$mode & 0022) == 0 ))
+          done
+          test -x "$hook"
+          trust_root="$RUNNER_TEMP/latchway-collector-trust-root.pem"
+          isolation="$RUNNER_TEMP/latchway-play-integrity-isolation"
+          umask 077
+          printf '%s\n' "$COLLECTOR_TRUST_ROOT_PEM" > "$trust_root"
+          [[ "$COLLECTOR_TRUST_ROOT_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          test "$(sha256sum "$trust_root" | awk '{print $1}')" = "$COLLECTOR_TRUST_ROOT_SHA256"
+          openssl dgst -sha256 -verify "$trust_root" -signature "$signature" "$lease"
+          now=$(date +%s)
+          jq --exit-status \
+            --arg repository "$GITHUB_REPOSITORY" --arg commit "$SOURCE_COMMIT" \
+            --arg run_id "$GITHUB_RUN_ID" --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg job "$GITHUB_JOB" --arg runner "$RUNNER_NAME" \
+            --arg grant "$DEVICE_GRANT_SHA256" --arg artifact "$EXPECTED_ARTIFACT_SHA256" \
+            --argjson now "$now" '
+              .schema_version == "latchway.physical-collector-lease.v1" and
+              .repository == $repository and .source_commit == $commit and
+              .workflow == {run_id:$run_id,run_attempt:$run_attempt,job:$job,audience:"android-play-integrity"} and
+              .runner.name == $runner and .runner.ephemeral == true and .runner.jit == true and
+              .runner.max_jobs == 1 and .runner.fresh_boot == true and .runner.clean_workspace == true and
+              .runner.repository_scope == $repository and .runner.device_exclusive == true and
+              .runner.destroy_after_job == true and (.runner.image_digest | test("^sha256:[0-9a-f]{64}$")) and
+              (.runner.boot_id_sha256 | test("^[0-9a-f]{64}$")) and
+              .credentials == {long_lived:false,organization:false,administration:false,registry:false,oidc:false} and
+              .supervisor == {private_key_isolated:true,caller_supplied_claims_accepted:false,independent_device_verification:true,independent_provider_verification:true,gateway_run_receipt_verification:true,one_use_invocation:true,out_of_band_watchdog:true,destroy_on_disconnect:true} and
+              .grant.audience == "latchway-physical-evidence/android-play-integrity" and
+              .grant.source_commit == $commit and .grant.run_id == $run_id and
+              .grant.run_attempt == $run_attempt and .grant.sha256 == $grant and
+              .grant.single_use == true and (.grant.jti_sha256 | test("^[0-9a-f]{64}$")) and
+              (.grant.issued_at_unix | type == "number") and
+              (.grant.expires_at_unix | type == "number") and
+              .grant.issued_at_unix >= .issued_at_unix and .grant.issued_at_unix <= $now and
+              .grant.expires_at_unix >= $now and .grant.expires_at_unix <= .expires_at_unix and
+              .grant.expires_at_unix > .grant.issued_at_unix and
+              (.grant.expires_at_unix - .grant.issued_at_unix) <= 300 and
+              .candidate.artifacts == {installed_apk_set_sha256:$artifact} and
+              (.issued_at_unix | type == "number") and (.expires_at_unix | type == "number") and
+              .issued_at_unix <= $now and .expires_at_unix >= $now and
+              (.expires_at_unix - .issued_at_unix) <= 3600
+            ' "$lease" >/dev/null
+          install -d -m 0700 "$isolation"
+          install -m 0600 "$lease" "$isolation/collector-lease.json"
+          install -m 0600 "$signature" "$isolation/collector-lease.sig"
+      - name: Download the GitHub-hosted source authorization
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: play-integrity-source-authorization-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/latchway-play-integrity-source
+      - name: Verify the exact source authorization before checkout
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -Eeuo pipefail
+          root="$RUNNER_TEMP/latchway-play-integrity-source"
+          test -z "$(find "$root" -mindepth 1 ! -type f -print -quit)"
+          test "$(find "$root" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" = 3
+          (cd "$root" && sha256sum --check --strict SHA256SUMS)
+          gh attestation verify "$root/source-authorization.json" \
+            --bundle "$root/source-authorization.sigstore.json" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/physical-play-integrity.yml" \
+            --source-digest "$SOURCE_COMMIT" --signer-digest "$SOURCE_COMMIT" \
+            --source-ref refs/heads/main --deny-self-hosted-runners >/dev/null
+          jq --exit-status \
+            --arg repository "$GITHUB_REPOSITORY" --arg commit "$SOURCE_COMMIT" \
+            --arg run_id "$GITHUB_RUN_ID" --arg run_attempt "$GITHUB_RUN_ATTEMPT" '
+              .schema_version == "latchway.physical-source-authorization.v1" and
+              .repository == $repository and .source.commit == $commit and
+              .workflow == {run_id:$run_id,run_attempt:$run_attempt,ref:"refs/heads/main"} and
+              .audiences == ["android-play-integrity"] and (.source.tree | test("^[0-9a-f]{40,64}$"))
+            ' "$root/source-authorization.json" >/dev/null
+          auth_sha=$(sha256sum "$root/source-authorization.json" | awk '{print $1}')
+          test "$(jq -r '.source_authorization_sha256' /etc/latchway/physical-collector/lease.json)" = "$auth_sha"
+          isolation="$RUNNER_TEMP/latchway-play-integrity-isolation"
+          install -m 0600 "$root/source-authorization.json" "$isolation/source-authorization.json"
+          install -m 0600 "$root/source-authorization.sigstore.json" "$isolation/source-authorization.sigstore.json"
+          install -m 0600 "$root/SHA256SUMS" "$isolation/SOURCE_AUTHORIZATION_SHA256SUMS"
       - name: Check out exact Android candidate
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -36,14 +214,18 @@ jobs:
           EXPECTED_ADB_VERSION: ${{ vars.LATCHWAY_ADB_VERSION }}
           EXPECTED_APKSIGNER_VERSION: ${{ vars.LATCHWAY_APKSIGNER_VERSION }}
         run: |
+          set -Eeuo pipefail
+          test "$GITHUB_REF" = refs/heads/main
           test "$REQUESTED_COMMIT" = "$EXPECTED_COMMIT"
           test "$GITHUB_SHA" = "$EXPECTED_COMMIT"
           [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$(jq -r '.source.tree' "$RUNNER_TEMP/latchway-play-integrity-source/source-authorization.json")"
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
           test "$(adb version | head -n 1)" = "$EXPECTED_ADB_VERSION"
           test "$(apksigner --version 2>&1 | head -n 1)" = "$EXPECTED_APKSIGNER_VERSION"
       - name: Collect and validate production physical-device evidence
+        id: collect
         env:
           LATCHWAY_EVIDENCE_OUTPUT_DIR: ${{ runner.temp }}/latchway-play-integrity-evidence
           LATCHWAY_ANDROID_DEVICE_SERIAL: ${{ secrets.LATCHWAY_ANDROID_DEVICE_SERIAL }}
@@ -71,7 +253,354 @@ jobs:
           LATCHWAY_ERROR_MAPPING_FEATURE: ${{ vars.LATCHWAY_ERROR_MAPPING_FEATURE }}
           LATCHWAY_RUN_ID: play-integrity-${{ github.run_id }}-${{ github.run_attempt }}
         run: scripts/run-physical-play-integrity.sh
-      - name: Attest the validated profile and evidence
+      - name: Wipe device app data even when collection fails
+        if: ${{ always() }}
+        shell: bash
+        env:
+          LATCHWAY_ANDROID_DEVICE_SERIAL: ${{ secrets.LATCHWAY_ANDROID_DEVICE_SERIAL }}
+          LATCHWAY_PACKAGE_NAME: ${{ vars.LATCHWAY_ANDROID_PACKAGE_NAME }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -Eeuo pipefail
+          isolation="$RUNNER_TEMP/latchway-play-integrity-isolation"
+          install -d -m 0700 "$isolation"
+          adb_device() { adb -s "$LATCHWAY_ANDROID_DEVICE_SERIAL" "$@"; }
+          started=$(date +%s)
+          adb_device shell am force-stop "$LATCHWAY_PACKAGE_NAME"
+          test "$(adb_device shell pm clear "$LATCHWAY_PACKAGE_NAME" | tr -d '\r')" = Success
+          test -z "$(adb_device shell pidof "$LATCHWAY_PACKAGE_NAME" 2>/dev/null | tr -d '\r' || true)"
+          wipe="$isolation/device-wipe.json"
+          jq -n -S \
+            --arg repository "$GITHUB_REPOSITORY" --arg commit "$SOURCE_COMMIT" \
+            --arg run_id "$GITHUB_RUN_ID" --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg job "$GITHUB_JOB" --arg runner "$RUNNER_NAME" \
+            --argjson started "$started" --argjson finished "$(date +%s)" \
+            '{schema_version:"latchway.physical-device-wipe.v1",repository:$repository,source_commit:$commit,workflow:{run_id:$run_id,run_attempt:$run_attempt,job:$job,audience:"android-play-integrity"},runner_name:$runner,method:"android-pm-clear",app_data_wiped:true,application_absent:false,process_absent:true,started_at_unix:$started,finished_at_unix:$finished}' \
+            > "$wipe"
+      - name: Unconditionally finalize, deregister, and arm collector destruction
+        if: ${{ always() }}
+        shell: bash
+        env:
+          LATCHWAY_ANDROID_DEVICE_SERIAL: ${{ secrets.LATCHWAY_ANDROID_DEVICE_SERIAL }}
+          LATCHWAY_PACKAGE_NAME: ${{ vars.LATCHWAY_ANDROID_PACKAGE_NAME }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -Eeuo pipefail
+          isolation="$RUNNER_TEMP/latchway-play-integrity-isolation"
+          evidence="$RUNNER_TEMP/latchway-play-integrity-evidence"
+          source="$RUNNER_TEMP/latchway-play-integrity-source"
+          hook=/usr/local/libexec/latchway-physical-collector-finalize
+          install -d -m 0700 "$isolation"
+          "$hook" \
+            --lease /etc/latchway/physical-collector/lease.json \
+            --repository "$GITHUB_REPOSITORY" --source-commit "$SOURCE_COMMIT" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --job "$GITHUB_JOB" --audience android-play-integrity \
+            --runner-name "$RUNNER_NAME" \
+            --source-authorization "$source/source-authorization.json" \
+            --evidence-directory "$evidence" \
+            --device-wipe-receipt "$isolation/device-wipe.json" \
+            --device-platform android --device-selector "$LATCHWAY_ANDROID_DEVICE_SERIAL" \
+            --application-id "$LATCHWAY_PACKAGE_NAME" \
+            --output-json "$isolation/collector-teardown.json" \
+            --output-signature "$isolation/collector-teardown.sig"
+          openssl dgst -sha256 -verify "$RUNNER_TEMP/latchway-collector-trust-root.pem" \
+            -signature "$isolation/collector-teardown.sig" "$isolation/collector-teardown.json"
+          auth_sha=$(sha256sum "$isolation/source-authorization.json" | awk '{print $1}')
+          lease_sha=$(sha256sum "$isolation/collector-lease.json" | awk '{print $1}')
+          wipe_sha=$(sha256sum "$isolation/device-wipe.json" | awk '{print $1}')
+          evidence_sha=$(sha256sum "$evidence/SHA256SUMS" | awk '{print $1}')
+          device_sha=$(sha256sum "$evidence/device-inventory.json" | awk '{print $1}')
+          provider_sha=$(sha256sum "$evidence/play-integrity-observation.json" | awk '{print $1}')
+          deployment_sha=$(sha256sum "$evidence/gateway-deployment-verification.json" | awk '{print $1}')
+          now=$(date +%s)
+          jq --exit-status \
+            --arg repository "$GITHUB_REPOSITORY" --arg commit "$SOURCE_COMMIT" \
+            --arg run_id "$GITHUB_RUN_ID" --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg job "$GITHUB_JOB" --arg runner "$RUNNER_NAME" \
+            --arg auth "$auth_sha" --arg lease "$lease_sha" --arg wipe "$wipe_sha" \
+            --arg evidence "$evidence_sha" --arg device "$device_sha" \
+            --arg provider "$provider_sha" --arg deployment "$deployment_sha" --argjson now "$now" '
+              .schema_version == "latchway.physical-collector-teardown.v1" and
+              .repository == $repository and .source_commit == $commit and
+              .workflow == {run_id:$run_id,run_attempt:$run_attempt,job:$job,audience:"android-play-integrity"} and
+              .runner.name == $runner and .runner.deregistered == true and
+              .runner.accepts_more_jobs == false and .runner.destroy_scheduled == true and
+              .runner.destroy_deadline_unix >= $now and .runner.destroy_deadline_unix <= ($now + 600) and
+              .evidence_eligible == true and
+              .supervisor == {private_key_isolated:true,caller_supplied_claims_accepted:false,independent_device_verification:true,independent_provider_verification:true,gateway_run_receipt_verified:true,one_use_invocation:true,watchdog_armed:true} and
+              .observations.device_inventory_sha256 == $device and
+              .observations.provider_observation_sha256 == $provider and
+              .observations.gateway_deployment_verification_sha256 == $deployment and
+              (.observations.gateway_run_receipt_sha256 | test("^[0-9a-f]{64}$")) and
+              .device == {app_data_wiped:true,method:"android-pm-clear",receipt_sha256:$wipe} and
+              .source_authorization_sha256 == $auth and .lease_sha256 == $lease and
+              .evidence_manifest_sha256 == $evidence
+            ' "$isolation/collector-teardown.json" >/dev/null
+          cd "$isolation"
+          sha256sum \
+            SOURCE_AUTHORIZATION_SHA256SUMS \
+            collector-lease.json collector-lease.sig \
+            collector-teardown.json collector-teardown.sig \
+            device-wipe.json source-authorization.json \
+            source-authorization.sigstore.json > ISOLATION_SHA256SUMS
+          test "${{ steps.collect.outcome }}" = success
+      - name: Retain bounded unsigned physical evidence for the fresh signer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: play-integrity-physical-unsigned-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/latchway-play-integrity-evidence/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Retain the bounded unsigned collector-isolation proof
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: play-integrity-collector-isolation-unsigned-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/latchway-play-integrity-isolation/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  attest:
+    name: Attest validated Play Integrity evidence
+    needs: play-integrity-production
+    if: github.ref == 'refs/heads/main'
+    environment: physical-evidence-signing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      artifact-metadata: write
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - name: Download unsigned evidence without a checkout
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: play-integrity-physical-unsigned-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/latchway-play-integrity-evidence
+      - name: Download collector-isolation proof without a checkout
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: play-integrity-collector-isolation-unsigned-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/latchway-play-integrity-isolation
+      - name: Validate source authorization, one-job lease, wipe, and teardown
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COLLECTOR_TRUST_ROOT_PEM: ${{ vars.LATCHWAY_COLLECTOR_TRUST_ROOT_PEM }}
+          COLLECTOR_TRUST_ROOT_SHA256: ${{ vars.LATCHWAY_COLLECTOR_TRUST_ROOT_SHA256 }}
+          DEVICE_GRANT_SHA256: ${{ vars.LATCHWAY_DEVICE_GRANT_SHA256 }}
+          EXPECTED_ARTIFACT_SHA256: ${{ vars.LATCHWAY_ANDROID_INSTALLED_APK_SET_SHA256 }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -Eeuo pipefail
+          root="$RUNNER_TEMP/latchway-play-integrity-isolation"
+          evidence="$RUNNER_TEMP/latchway-play-integrity-evidence"
+          test -d "$root" && test ! -L "$root"
+          test -z "$(find "$root" -mindepth 1 ! -type f -print -quit)"
+          expected="$RUNNER_TEMP/play-integrity-isolation-expected"
+          printf '%s\n' \
+            ISOLATION_SHA256SUMS SOURCE_AUTHORIZATION_SHA256SUMS \
+            collector-lease.json collector-lease.sig \
+            collector-teardown.json collector-teardown.sig \
+            device-wipe.json source-authorization.json \
+            source-authorization.sigstore.json | LC_ALL=C sort > "$expected"
+          find "$root" -mindepth 1 -maxdepth 1 -type f -print \
+            | sed "s#^$root/##" | LC_ALL=C sort > "$RUNNER_TEMP/play-integrity-isolation-actual"
+          cmp --silent "$expected" "$RUNNER_TEMP/play-integrity-isolation-actual"
+          (cd "$root" && sha256sum --check --strict ISOLATION_SHA256SUMS)
+          (cd "$root" && sha256sum --check --strict SOURCE_AUTHORIZATION_SHA256SUMS)
+          gh attestation verify "$root/source-authorization.json" \
+            --bundle "$root/source-authorization.sigstore.json" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/physical-play-integrity.yml" \
+            --source-digest "$SOURCE_COMMIT" --signer-digest "$SOURCE_COMMIT" \
+            --source-ref refs/heads/main --deny-self-hosted-runners >/dev/null
+          trust_root="$RUNNER_TEMP/latchway-collector-trust-root.pem"
+          umask 077
+          printf '%s\n' "$COLLECTOR_TRUST_ROOT_PEM" > "$trust_root"
+          [[ "$COLLECTOR_TRUST_ROOT_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          test "$(sha256sum "$trust_root" | awk '{print $1}')" = "$COLLECTOR_TRUST_ROOT_SHA256"
+          openssl dgst -sha256 -verify "$trust_root" -signature "$root/collector-lease.sig" "$root/collector-lease.json"
+          openssl dgst -sha256 -verify "$trust_root" -signature "$root/collector-teardown.sig" "$root/collector-teardown.json"
+          auth_sha=$(sha256sum "$root/source-authorization.json" | awk '{print $1}')
+          lease_sha=$(sha256sum "$root/collector-lease.json" | awk '{print $1}')
+          wipe_sha=$(sha256sum "$root/device-wipe.json" | awk '{print $1}')
+          evidence_sha=$(sha256sum "$evidence/SHA256SUMS" | awk '{print $1}')
+          device_sha=$(sha256sum "$evidence/device-inventory.json" | awk '{print $1}')
+          provider_sha=$(sha256sum "$evidence/play-integrity-observation.json" | awk '{print $1}')
+          deployment_sha=$(sha256sum "$evidence/gateway-deployment-verification.json" | awk '{print $1}')
+          runner="latchway-android-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          jq --exit-status \
+            --arg repository "$GITHUB_REPOSITORY" --arg commit "$SOURCE_COMMIT" \
+            --arg run_id "$GITHUB_RUN_ID" --arg run_attempt "$GITHUB_RUN_ATTEMPT" '
+              .schema_version == "latchway.physical-source-authorization.v1" and
+              .repository == $repository and .source.commit == $commit and
+              .workflow == {run_id:$run_id,run_attempt:$run_attempt,ref:"refs/heads/main"} and
+              .audiences == ["android-play-integrity"] and (.source.tree | test("^[0-9a-f]{40,64}$"))
+            ' "$root/source-authorization.json" >/dev/null
+          jq --exit-status \
+            --arg repository "$GITHUB_REPOSITORY" --arg commit "$SOURCE_COMMIT" \
+            --arg run_id "$GITHUB_RUN_ID" --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg runner "$runner" --arg auth "$auth_sha" \
+            --arg grant "$DEVICE_GRANT_SHA256" --arg artifact "$EXPECTED_ARTIFACT_SHA256" '
+              .schema_version == "latchway.physical-collector-lease.v1" and
+              .repository == $repository and .source_commit == $commit and
+              .source_authorization_sha256 == $auth and
+              .workflow == {run_id:$run_id,run_attempt:$run_attempt,job:"play-integrity-production",audience:"android-play-integrity"} and
+              .runner.name == $runner and .runner.ephemeral == true and .runner.jit == true and
+              .runner.max_jobs == 1 and .runner.fresh_boot == true and .runner.clean_workspace == true and
+              .runner.repository_scope == $repository and .runner.device_exclusive == true and
+              .runner.destroy_after_job == true and (.runner.image_digest | test("^sha256:[0-9a-f]{64}$")) and
+              (.runner.boot_id_sha256 | test("^[0-9a-f]{64}$")) and
+              .credentials == {long_lived:false,organization:false,administration:false,registry:false,oidc:false} and
+              .supervisor == {private_key_isolated:true,caller_supplied_claims_accepted:false,independent_device_verification:true,independent_provider_verification:true,gateway_run_receipt_verification:true,one_use_invocation:true,out_of_band_watchdog:true,destroy_on_disconnect:true} and
+              .grant.audience == "latchway-physical-evidence/android-play-integrity" and
+              .grant.source_commit == $commit and .grant.run_id == $run_id and
+              .grant.run_attempt == $run_attempt and .grant.sha256 == $grant and
+              .grant.single_use == true and (.grant.jti_sha256 | test("^[0-9a-f]{64}$")) and
+              (.grant.issued_at_unix | type == "number") and (.grant.expires_at_unix | type == "number") and
+              .grant.issued_at_unix >= .issued_at_unix and
+              .grant.expires_at_unix > .grant.issued_at_unix and
+              (.grant.expires_at_unix - .grant.issued_at_unix) <= 300 and
+              .grant.expires_at_unix <= .expires_at_unix and
+              .candidate.artifacts == {installed_apk_set_sha256:$artifact} and
+              (.expires_at_unix - .issued_at_unix) <= 3600
+            ' "$root/collector-lease.json" >/dev/null
+          jq --exit-status \
+            --arg repository "$GITHUB_REPOSITORY" --arg commit "$SOURCE_COMMIT" \
+            --arg run_id "$GITHUB_RUN_ID" --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg runner "$runner" '
+              .schema_version == "latchway.physical-device-wipe.v1" and
+              .repository == $repository and .source_commit == $commit and
+              .workflow == {run_id:$run_id,run_attempt:$run_attempt,job:"play-integrity-production",audience:"android-play-integrity"} and
+              .runner_name == $runner and .method == "android-pm-clear" and
+              .app_data_wiped == true and .application_absent == false and
+              .process_absent == true and .started_at_unix <= .finished_at_unix
+            ' "$root/device-wipe.json" >/dev/null
+          jq --exit-status \
+            --arg repository "$GITHUB_REPOSITORY" --arg commit "$SOURCE_COMMIT" \
+            --arg run_id "$GITHUB_RUN_ID" --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg runner "$runner" --arg auth "$auth_sha" --arg lease "$lease_sha" \
+            --arg wipe "$wipe_sha" --arg evidence "$evidence_sha" --arg device "$device_sha" \
+            --arg provider "$provider_sha" --arg deployment "$deployment_sha" '
+              .schema_version == "latchway.physical-collector-teardown.v1" and
+              .repository == $repository and .source_commit == $commit and
+              .workflow == {run_id:$run_id,run_attempt:$run_attempt,job:"play-integrity-production",audience:"android-play-integrity"} and
+              .runner.name == $runner and .runner.deregistered == true and
+              .runner.accepts_more_jobs == false and .runner.destroy_scheduled == true and
+              .runner.destroy_deadline_unix >= .finished_at_unix and
+              .runner.destroy_deadline_unix <= (.finished_at_unix + 600) and
+              .evidence_eligible == true and
+              .supervisor == {private_key_isolated:true,caller_supplied_claims_accepted:false,independent_device_verification:true,independent_provider_verification:true,gateway_run_receipt_verified:true,one_use_invocation:true,watchdog_armed:true} and
+              .observations.device_inventory_sha256 == $device and
+              .observations.provider_observation_sha256 == $provider and
+              .observations.gateway_deployment_verification_sha256 == $deployment and
+              (.observations.gateway_run_receipt_sha256 | test("^[0-9a-f]{64}$")) and
+              .device == {app_data_wiped:true,method:"android-pm-clear",receipt_sha256:$wipe} and
+              .source_authorization_sha256 == $auth and .lease_sha256 == $lease and
+              .evidence_manifest_sha256 == $evidence and (.finished_at_unix | type == "number")
+            ' "$root/collector-teardown.json" >/dev/null
+          lease_issued=$(jq -r '.issued_at_unix' "$root/collector-lease.json")
+          lease_expires=$(jq -r '.expires_at_unix' "$root/collector-lease.json")
+          wipe_started=$(jq -r '.started_at_unix' "$root/device-wipe.json")
+          teardown_finished=$(jq -r '.finished_at_unix' "$root/collector-teardown.json")
+          (( lease_issued <= wipe_started && lease_expires >= teardown_finished ))
+          jq -n -S \
+            --arg repository "$GITHUB_REPOSITORY" --arg commit "$SOURCE_COMMIT" \
+            --arg run_id "$GITHUB_RUN_ID" --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg auth "$auth_sha" --arg lease "$lease_sha" \
+            --arg teardown "$(sha256sum "$root/collector-teardown.json" | awk '{print $1}')" \
+            --arg evidence "$evidence_sha" \
+            '{schema_version:"latchway.physical-collector-isolation-validation.v1",valid:true,repository:$repository,source_commit:$commit,workflow:{run_id:$run_id,run_attempt:$run_attempt,audience:"android-play-integrity"},source_authorization_sha256:$auth,lease_sha256:$lease,teardown_sha256:$teardown,evidence_manifest_sha256:$evidence}' \
+            > "$root/collector-isolation-validation.json"
+      - name: Validate the fixed receipt, hashes, and coordinates without candidate code
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          EXPECTED_RUN_ID: play-integrity-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -Eeuo pipefail
+          root="$RUNNER_TEMP/latchway-play-integrity-evidence"
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_SHA" = "$SOURCE_COMMIT"
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test -d "$root" && test ! -L "$root"
+          test -z "$(find "$root" -mindepth 1 ! -type f -print -quit)"
+          expected="$RUNNER_TEMP/play-integrity-expected-files"
+          actual="$RUNNER_TEMP/play-integrity-actual-files"
+          payloads="$RUNNER_TEMP/play-integrity-expected-payloads"
+          printf '%s\n' \
+            SHA256SUMS \
+            device-inventory.json \
+            gateway-client-policy.json \
+            gateway-deployment-public-key.pem \
+            gateway-deployment-statement.json \
+            gateway-deployment-statement.sig \
+            gateway-deployment-verification.json \
+            installed-apk-set.sha256 \
+            play-integrity-evidence.json \
+            play-integrity-junit.xml \
+            play-integrity-observation.json \
+            play-integrity-profile.json \
+            play-integrity-validation.json | LC_ALL=C sort > "$expected"
+          find "$root" -mindepth 1 -maxdepth 1 -type f -print \
+            | sed "s#^$root/##" | LC_ALL=C sort > "$actual"
+          cmp --silent "$expected" "$actual"
+          grep -v '^SHA256SUMS$' "$expected" > "$payloads"
+          total=0
+          while IFS= read -r name; do
+            bytes=$(stat -c '%s' "$root/$name")
+            (( bytes > 0 && bytes <= 33554432 ))
+            total=$((total + bytes))
+          done < "$expected"
+          (( total <= 62914560 ))
+          manifest="$root/SHA256SUMS"
+          test -z "$(tail -c 1 "$manifest")"
+          checksum_names="$RUNNER_TEMP/play-integrity-checksum-names"
+          : > "$checksum_names"
+          while IFS= read -r line; do
+            [[ "$line" =~ ^([0-9a-f]{64})\ \ ([A-Za-z0-9][A-Za-z0-9._-]{0,127})$ ]]
+            digest=${BASH_REMATCH[1]}
+            name=${BASH_REMATCH[2]}
+            test -f "$root/$name" && test ! -L "$root/$name"
+            test "$(sha256sum "$root/$name" | awk '{print $1}')" = "$digest"
+            printf '%s\n' "$name" >> "$checksum_names"
+          done < "$manifest"
+          LC_ALL=C sort -o "$checksum_names" "$checksum_names"
+          test -z "$(uniq -d "$checksum_names")"
+          cmp --silent "$payloads" "$checksum_names"
+          for document in "$root"/*.json; do jq --exit-status . "$document" >/dev/null; done
+          evidence_sha=$(sha256sum "$root/play-integrity-evidence.json" | awk '{print $1}')
+          jq --exit-status --arg commit "$SOURCE_COMMIT" '
+            .schema_version == "latchway.physical-device-profile.v1" and
+            .platform == "android_play_integrity" and
+            .repository == "Latchway/latchway-android" and
+            .source.commit == $commit and .source.worktree_clean == true
+          ' "$root/play-integrity-profile.json" >/dev/null
+          jq --exit-status --arg commit "$SOURCE_COMMIT" --arg run "$EXPECTED_RUN_ID" '
+            .schema_version == "latchway.physical-device-evidence.v1" and
+            .release_eligible == true and .platform == "android_play_integrity" and
+            .run.id == $run and .run.mode == "release" and
+            .source.repository == "Latchway/latchway-android" and
+            .source.commit == $commit and .source.worktree_clean == true and
+            .device.physical == true and .device.simulator == false and
+            .device.emulator == false and .device.testing == false and
+            .device.debugger_attached == false and
+            .provider.name == "play_integrity" and .provider.environment == "production" and
+            (.tests | type == "array" and length > 0 and all(.[]; .status == "passed")) and
+            (.redaction | type == "object" and all(.[]; . == false))
+          ' "$root/play-integrity-evidence.json" >/dev/null
+          jq --exit-status --arg commit "$SOURCE_COMMIT" --arg run "$EXPECTED_RUN_ID" --arg sha "$evidence_sha" '
+            .schema_version == "latchway.physical-device-validation.v1" and
+            .valid == true and .platform == "android_play_integrity" and
+            .source_commit == $commit and .run_id == $run and
+            .evidence_sha256 == $sha and .errors == []
+          ' "$root/play-integrity-validation.json" >/dev/null
+      - name: Attest the exact validated profile, evidence, and checksum manifest
         id: attest
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
         with:
@@ -79,15 +608,36 @@ jobs:
             ${{ runner.temp }}/latchway-play-integrity-evidence/play-integrity-profile.json
             ${{ runner.temp }}/latchway-play-integrity-evidence/play-integrity-evidence.json
             ${{ runner.temp }}/latchway-play-integrity-evidence/SHA256SUMS
+            ${{ runner.temp }}/latchway-play-integrity-isolation/collector-isolation-validation.json
       - name: Retain the GitHub Sigstore bundle with the report
         env:
           BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
-        run: cp "$BUNDLE_PATH" "${{ runner.temp }}/latchway-play-integrity-evidence/github-attestation.sigstore.json"
-      - name: Retain redacted evidence, JUnit, profiles, and hashes
-        if: always()
+        run: |
+          set -Eeuo pipefail
+          root="$RUNNER_TEMP/latchway-play-integrity-evidence"
+          destination="$root/github-attestation.sigstore.json"
+          test -f "$BUNDLE_PATH" && test ! -L "$BUNDLE_PATH"
+          install -m 0600 -- "$BUNDLE_PATH" "$destination"
+          install -m 0600 -- "$BUNDLE_PATH" "$RUNNER_TEMP/latchway-play-integrity-isolation/github-isolation-attestation.sigstore.json"
+          bytes=$(stat -c '%s' "$destination")
+          (( bytes > 0 && bytes <= 4194304 ))
+          test "$(find "$root" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" = 14
+          test -z "$(find "$root" -mindepth 1 ! -type f -print -quit)"
+          total=$(find "$root" -type f -printf '%s\n' | awk '{sum += $1} END {print sum + 0}')
+          (( total <= 67108864 ))
+      - name: Retain redacted evidence, JUnit, profiles, hashes, and attestation
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: play-integrity-physical-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/latchway-play-integrity-evidence
-          if-no-files-found: warn
+          path: ${{ runner.temp }}/latchway-play-integrity-evidence/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - name: Retain the independently signed collector-isolation proof
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: play-integrity-collector-isolation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/latchway-play-integrity-isolation/
+          if-no-files-found: error
+          compression-level: 0
           retention-days: 30

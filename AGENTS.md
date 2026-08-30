@@ -8,8 +8,10 @@ Build the Kotlin SDK that lets Android applications authenticate to Latchway,
 establish device-bound sessions, and authorize ordinary HTTP requests without
 holding an upstream provider credential.
 
-The version 1 Android implementation is locked to released contract checkpoint
-0.5.1 and wire protocol 1. Keep `contract.lock`, vendored vectors, runtime
+The version 1 Android implementation is locked to the draft contract 1.0.0
+checkpoint and current wire protocol 2. The gateway may continue accepting
+wire protocol 1 from legacy clients, but this SDK emits protocol 2. Keep
+`contract.lock`, vendored vectors, runtime
 behavior, and documentation aligned to the authoritative core contract bundle.
 The artifacts remain unpublished until protected Play-device, Maven Central,
 provenance, and immutable-release evidence gates pass. Never invent a temporary

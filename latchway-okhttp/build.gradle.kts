@@ -20,12 +20,17 @@ android {
     }
 }
 
+val okhttpCompatibilityVersion = providers.gradleProperty("latchway.okhttp.version").orNull
+
 dependencies {
     api(project(":latchway-core"))
-    api(libs.okhttp)
+    if (okhttpCompatibilityVersion == null) {
+        api(libs.okhttp)
+    } else {
+        api("com.squareup.okhttp3:okhttp:$okhttpCompatibilityVersion")
+    }
     implementation(libs.coroutines.core)
     testImplementation(libs.junit)
     testImplementation(libs.json)
-    testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.coroutines.core)
 }

@@ -3,7 +3,9 @@
 ## Status
 
 This document describes the intended `1.0.0` source candidate locked
-to contract `0.5.1` and wire protocol `1`. Public APIs remain handwritten; the
+to draft contract `1.0.0` and current wire protocol `2`. The gateway retains
+wire protocol `1` only for legacy clients; this SDK emits protocol `2`, including
+for Installation Family and Client Component operations. Public APIs remain handwritten; the
 internal JSON boundary is validated directly against the core schemas and
 shared fixtures.
 
@@ -80,6 +82,15 @@ additional authenticated data, and encrypted with a distinct Android Keystore
 AES-256-GCM key. Coroutine-safe coordination protects both first exchange and
 refresh single flight.
 
+The root Android application owns an Installation Family. A configured
+delegated component receives a different Android Keystore P-256 alias and a
+different AES-GCM state namespace. Its provisioning grant is never returned by
+the public client API: core consumes it with the child key, immediately rotates
+the first refresh token so the full server component/family/trust projection is
+validated, and persists only the resulting native encrypted session. Safe
+registry records let family revocation find and destroy descendant keys after a
+process restart; they contain no credentials, subjects, or attestation evidence.
+
 The server constructs the canonical attestation binding because it owns the
 resolved principal. Its challenge includes `client_data_hash`, the 43-character
 base64url SHA-256 output. The Play adapter validates that value and passes the
@@ -101,13 +112,19 @@ Application interceptors, network interceptors, authenticators, cookies, and
 redirects are removed, preventing recursive session establishment and
 cross-origin control credential forwarding.
 Credential attachment is pinned to the configured scheme, host, and effective
-port. Control responses and problem bodies have strict byte limits.
+port and to the exact contract-owned data-plane route set. Opaque routes are
+also feature-path bound and reject queries, encoded path traversal, and
+absolute-destination forms. Control responses and problem bodies have strict
+byte limits.
 
 Cancellation and streaming flow end to end. Process-wide installation gates
 serialize refresh rotation and grant persistence across SDK client instances;
 cleanup is bound to the exact access-token generation so a delayed old-session
 response cannot erase a newer grant. The OkHttp network origin guard blocks
-Latchway headers before a cross-origin redirect is dispatched. Errors expose
+Latchway headers before a cross-origin redirect is dispatched and re-signs
+each permitted network attempt. A second internal OkHttp connection attempt is
+rejected as indeterminate, while an explicit pre-dispatch nonce/session
+follow-up receives a fresh proof. Errors expose
 stable safe fields, request identifiers, and the required operation ID for
 indeterminate outcomes, never tokens or raw integrity evidence.
 

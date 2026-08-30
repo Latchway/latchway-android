@@ -1115,6 +1115,214 @@ class SessionCoordinatorTest {
         client.close()
     }
 
+    @Test
+    fun delegatedComponentProvisioningUsesIndependentKeySessionAndRevocation() = runBlocking {
+        val rootState = MemoryStateStore(
+            snapshot("a".repeat(64), "r".repeat(32), now + 600, now + 3_600),
+        )
+        val componentSigner = FakeSigner()
+        val componentState = MemoryComponentStateStore()
+        val requests = ArrayList<LatchwayTransportRequest>()
+        val responses = ArrayDeque(
+            listOf(
+                response(201, componentProvisioning()),
+                response(201, initialComponentGrant("b".repeat(64), "s".repeat(32))),
+                response(200, refreshedComponentGrant("c".repeat(64), "t".repeat(32), componentSigner)),
+                response(200, refreshedComponentGrant("d".repeat(64), "u".repeat(32), componentSigner)),
+                response(204, ""),
+            ),
+        )
+        val client = client(
+            stateStore = rootState,
+            transport = LatchwayTransport { request ->
+                requests += request
+                responses.removeFirst()
+            },
+        )
+
+        val component = client.provisionComponent(
+            definitionId = "android-wear",
+            requestedFeatures = setOf("assistant"),
+            signer = componentSigner,
+            stateStore = componentState,
+        )
+
+        assertEquals(3, requests.size)
+        assertEquals(
+            "/client/v1/installation-families/current/components",
+            requests[0].uri.path,
+        )
+        assertTrue(requests[0].headers["Authorization"].orEmpty().startsWith("DPoP "))
+        val provisioningBody = JSONObject(String(checkNotNull(requests[0].body), StandardCharsets.UTF_8))
+        assertEquals("android-wear", provisioningBody.getString("component_definition_id"))
+        assertEquals(componentSigner.publicJwk.x, provisioningBody.getJSONObject("public_jwk").getString("x"))
+
+        assertEquals("/client/v1/component-sessions", requests[1].uri.path)
+        assertNull(requests[1].headers["Authorization"])
+        assertEquals(componentSigner.publicJwk.x, proofJwkX(checkNotNull(requests[1].headers["DPoP"])))
+        assertEquals("/client/v1/sessions/refresh", requests[2].uri.path)
+        assertEquals(componentSigner.publicJwk.x, proofJwkX(checkNotNull(requests[2].headers["DPoP"])))
+        assertFalse(requests[1].headers["DPoP"] == requests[2].headers["DPoP"])
+
+        val authorized = component.authorize(
+            "POST",
+            URI("https://gateway.example.test/v1/responses"),
+            "assistant",
+        )
+        assertTrue(authorized.authorizationHeader().startsWith("DPoP "))
+        assertEquals(componentSigner.publicJwk.x, proofJwkX(authorized.dpopHeader()))
+        val denied = assertThrows(LatchwayException::class.java) {
+            runBlocking {
+                component.authorize(
+                    "POST",
+                    URI("https://gateway.example.test/v1/responses"),
+                    "admin",
+                )
+            }
+        }
+        assertEquals(LatchwayErrorCode.COMPONENT_FEATURE_NOT_GRANTED, denied.code)
+        assertEquals(3, requests.size)
+
+        val wrongDestination = assertThrows(LatchwayException::class.java) {
+            runBlocking {
+                component.authorize(
+                    "POST",
+                    URI("https://not-the-gateway.example.test/v1/responses"),
+                    "assistant",
+                )
+            }
+        }
+        assertEquals(LatchwayErrorCode.TRANSPORT_DESTINATION_NOT_ALLOWED, wrongDestination.code)
+        assertEquals(3, requests.size)
+
+        component.refresh()
+        assertEquals("d".repeat(64), componentState.load()?.accessToken?.reveal())
+        assertFalse(requests[2].headers["DPoP"] == requests[3].headers["DPoP"])
+
+        component.revoke()
+        assertEquals(
+            "/client/v1/installation-families/current/components/cmp_01J00000000000000000000001",
+            requests[4].uri.path,
+        )
+        assertNull(componentState.load())
+        assertEquals(1, componentState.destroyCount)
+        assertEquals(1, componentSigner.resetCount)
+        assertEquals("a".repeat(64), rootState.load()?.accessToken?.reveal())
+        val retired = assertThrows(LatchwayException::class.java) {
+            runBlocking {
+                component.authorize(
+                    "POST",
+                    URI("https://gateway.example.test/v1/responses"),
+                    "assistant",
+                )
+            }
+        }
+        assertEquals(LatchwayErrorCode.COMPONENT_REVOKED, retired.code)
+        assertEquals(5, requests.size)
+        client.close()
+    }
+
+    @Test
+    fun separateComponentClientsCannotRotateTheSameRefreshTokenConcurrently() = runBlocking {
+        val componentSigner = FakeSigner()
+        val componentState = MemoryComponentStateStore(
+            componentSnapshot(
+                accessToken = "a".repeat(64),
+                refreshToken = "r".repeat(32),
+                accessExpiresAt = now - 1,
+                componentSigner = componentSigner,
+            ),
+        )
+        val refreshEntered = CompletableDeferred<Unit>()
+        val releaseRefresh = CompletableDeferred<Unit>()
+        val refreshCalls = AtomicInteger()
+        val client = client(
+            stateStore = MemoryStateStore(
+                snapshot("b".repeat(64), "s".repeat(32), now + 600, now + 3_600),
+            ),
+            transport = LatchwayTransport { request ->
+                assertEquals("/client/v1/sessions/refresh", request.uri.path)
+                check(refreshCalls.incrementAndGet() == 1) { "component refresh was not single-flight" }
+                refreshEntered.complete(Unit)
+                releaseRefresh.await()
+                response(200, refreshedComponentGrant("c".repeat(64), "t".repeat(32), componentSigner))
+            },
+        )
+        val first = client.openComponent("android-wear", componentSigner, componentState)
+        val second = client.openComponent("android-wear", componentSigner, componentState)
+
+        coroutineScope {
+            val authorizations = listOf(
+                async {
+                    first.authorize(
+                        "POST",
+                        URI("https://gateway.example.test/v1/responses"),
+                        "assistant",
+                    )
+                },
+                async {
+                    refreshEntered.await()
+                    second.authorize(
+                        "POST",
+                        URI("https://gateway.example.test/v1/responses"),
+                        "assistant",
+                    )
+                },
+            )
+            refreshEntered.await()
+            delay(25)
+            assertEquals(1, refreshCalls.get())
+            releaseRefresh.complete(Unit)
+            authorizations.awaitAll()
+        }
+
+        assertEquals(1, refreshCalls.get())
+        assertEquals("c".repeat(64), componentState.load()?.accessToken?.reveal())
+        client.close()
+    }
+
+    @Test
+    fun componentRefreshRejectsInstallationAndDelegationProjectionChanges() = runBlocking {
+        val componentSigner = FakeSigner()
+        val canonical = refreshedComponentGrant("c".repeat(64), "t".repeat(32), componentSigner)
+        val divergentResponses = listOf(
+            canonical.replace(
+                "ins_01J00000000000000000000001",
+                "ins_01J00000000000000000000002",
+            ),
+            canonical.replace(
+                "dlg_01J00000000000000000000001",
+                "dlg_01J00000000000000000000002",
+            ),
+        )
+
+        divergentResponses.forEach { divergent ->
+            val componentState = MemoryComponentStateStore(
+                componentSnapshot(
+                    accessToken = "a".repeat(64),
+                    refreshToken = "r".repeat(32),
+                    accessExpiresAt = now - 1,
+                    componentSigner = componentSigner,
+                ),
+            )
+            val client = client(
+                stateStore = MemoryStateStore(
+                    snapshot("b".repeat(64), "s".repeat(32), now + 600, now + 3_600),
+                ),
+                transport = LatchwayTransport { response(200, divergent) },
+            )
+            val component = client.openComponent("android-wear", componentSigner, componentState)
+
+            val error = assertThrows(LatchwayException::class.java) {
+                runBlocking { component.refresh() }
+            }
+
+            assertEquals(LatchwayErrorCode.RESPONSE_INVALID, error.code)
+            assertEquals("a".repeat(64), componentState.load()?.accessToken?.reveal())
+            client.close()
+        }
+    }
+
     private fun client(
         stateStore: SessionStateStore,
         transport: LatchwayTransport,
@@ -1194,6 +1402,119 @@ class SessionCoordinatorTest {
         }
     """.trimIndent()
 
+    private fun componentProvisioning(): String = """
+        {
+          "component_id":"cmp_01J00000000000000000000001",
+          "installation_family_id":"fam_01J00000000000000000000001",
+          "trust":{
+            "source":"delegated_from_attested_root",
+            "expires_at":"2023-11-14T23:13:20Z"
+          },
+          "granted_features":["assistant"],
+          "refresh_grant":"${"g".repeat(32)}",
+          "refresh_grant_expires_at":"2023-11-14T23:13:20Z"
+        }
+    """.trimIndent()
+
+    private fun initialComponentGrant(accessToken: String, refreshToken: String): String = """
+        {
+          "access_token":"$accessToken",
+          "expires_in":600,
+          "refresh_token":"$refreshToken",
+          "refresh_expires_at":"2023-11-14T23:13:20Z"
+        }
+    """.trimIndent()
+
+    private fun refreshedComponentGrant(
+        accessToken: String,
+        refreshToken: String,
+        componentSigner: InstallationSigner,
+    ): String = """
+        {
+          "access_token":"$accessToken",
+          "token_type":"DPoP",
+          "expires_in":600,
+          "refresh_token":"$refreshToken",
+          "refresh_expires_in":3600,
+          "installation":{
+            "id":"ins_01J00000000000000000000001",
+            "platform":"android",
+            "dpop_jkt":"${componentSigner.publicJwk.thumbprint()}",
+            "status":"active"
+          },
+          "installation_family":{
+            "id":"fam_01J00000000000000000000001",
+            "status":"active"
+          },
+          "component":{
+            "id":"cmp_01J00000000000000000000001",
+            "definition_id":"android-wear",
+            "kind":"wear_app",
+            "platform":"android",
+            "is_root":false,
+            "status":"active",
+            "dpop_jkt":"${componentSigner.publicJwk.thumbprint()}",
+            "granted_features":["assistant"]
+          },
+          "trust":{
+            "provider":"debug",
+            "level":"debug",
+            "source":"delegated_from_attested_root",
+            "parent_component_id":"cmp_01J00000000000000000000000",
+            "parent_attestation_provider":"debug",
+            "delegation_id":"dlg_01J00000000000000000000001",
+            "verified_at":"2023-11-14T22:13:20Z",
+            "expires_at":"2023-11-14T23:13:20Z"
+          }
+        }
+    """.trimIndent()
+
+    private fun componentSnapshot(
+        accessToken: String,
+        refreshToken: String,
+        accessExpiresAt: Long,
+        componentSigner: InstallationSigner,
+    ): ComponentSessionSnapshot = ComponentSessionSnapshot(
+        accessToken = SecretValue.of(accessToken),
+        refreshToken = SecretValue.of(refreshToken),
+        accessExpiresAtEpochSeconds = accessExpiresAt,
+        refreshExpiresAtEpochSeconds = now + 3_600,
+        installation = InstallationSummary(
+            id = "ins_01J00000000000000000000001",
+            platform = "android",
+            dpopJkt = componentSigner.publicJwk.thumbprint(),
+            status = "active",
+        ),
+        installationFamily = InstallationFamilySummary(
+            id = "fam_01J00000000000000000000001",
+            status = "active",
+        ),
+        component = ClientComponentSummary(
+            id = "cmp_01J00000000000000000000001",
+            definitionId = "android-wear",
+            kind = "wear_app",
+            platform = "android",
+            isRoot = false,
+            status = "active",
+            dpopJkt = componentSigner.publicJwk.thumbprint(),
+            grantedFeatures = setOf("assistant"),
+        ),
+        trust = ComponentTrustSummary(
+            provider = "debug",
+            level = "debug",
+            source = "delegated_from_attested_root",
+            parentComponentId = "cmp_01J00000000000000000000000",
+            parentAttestationProvider = "debug",
+            delegationId = "dlg_01J00000000000000000000001",
+            verifiedAt = "2023-11-14T22:13:20Z",
+            expiresAt = "2023-11-14T23:13:20Z",
+        ),
+    )
+
+    private fun proofJwkX(proof: String): String = JSONObject(
+        String(Base64Url.decode(proof.substringBefore('.')), StandardCharsets.UTF_8),
+    ).getJSONObject("jwk").getString("x")
+
     private fun problem(
         code: String,
         status: Int = if (code == "installation_revoked") 403 else 401,
@@ -1270,6 +1591,26 @@ class SessionCoordinatorTest {
             if (clearFailuresRemaining.getAndUpdate { count -> (count - 1).coerceAtLeast(0) } > 0) {
                 throw checkNotNull(clearFailure)
             }
+            value = null
+        }
+    }
+
+    private class MemoryComponentStateStore(
+        initial: ComponentSessionSnapshot? = null,
+    ) : ComponentSessionStateStore {
+        @Volatile private var value = initial
+        var destroyCount: Int = 0
+            private set
+        override suspend fun load(): ComponentSessionSnapshot? = value
+        override suspend fun save(snapshot: ComponentSessionSnapshot) {
+            value = snapshot
+        }
+        override suspend fun clear() {
+            value = null
+        }
+
+        override suspend fun destroy() {
+            destroyCount++
             value = null
         }
     }

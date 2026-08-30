@@ -64,7 +64,14 @@ class AuthenticatorPolicyTest {
     fun priorAuthenticationAttemptAndUnknownProblemAreNotRetried() {
         val first = response("session_expired")
         val repeated = first.newBuilder()
-            .priorResponse(first.newBuilder().body(ByteArray(0).toResponseBody()).build())
+            .priorResponse(
+                Response.Builder()
+                    .request(first.request)
+                    .protocol(first.protocol)
+                    .code(first.code)
+                    .message(first.message)
+                    .build(),
+            )
             .build()
         assertEquals(AuthenticationAction.NONE, authenticationDecision(repeated).action)
         assertEquals(AuthenticationAction.NONE, authenticationDecision(response("quota_exceeded")).action)
@@ -108,6 +115,16 @@ class AuthenticatorPolicyTest {
             AuthenticationAction.NONE,
             authenticationDecision(response("installation_revoked")).action,
         )
+        assertEquals(
+            AuthenticationAction.NONE,
+            authenticationDecision(
+                response("component_revoked", httpStatus = 403, problemStatus = 403),
+            ).action,
+        )
+        assertEquals(
+            LatchwayErrorCode.COMPONENT_KEY_REPLACED,
+            response("component_key_replaced").problemCode(),
+        )
     }
 
     @Test
@@ -118,19 +135,25 @@ class AuthenticatorPolicyTest {
         observeInstallationRevocation(revoked, { it.host == "gateway.example.test" }) { revocations++ }
 
         assertEquals(1, revocations)
-        assertTrue(revoked.body.string().contains("installation_revoked"))
+
+        observeInstallationRevocation(
+            response("installation_family_revoked", httpStatus = 403, problemStatus = 403),
+            { it.host == "gateway.example.test" },
+        ) { revocations++ }
+        assertEquals(2, revocations)
+        assertTrue(checkNotNull(revoked.body).string().contains("installation_revoked"))
 
         observeInstallationRevocation(
             response("installation_revoked", httpStatus = 401, problemStatus = 401),
             { it.host == "gateway.example.test" },
         ) { revocations++ }
-        assertEquals(1, revocations)
+        assertEquals(2, revocations)
 
         observeInstallationRevocation(
             response("installation_revoked", url = "https://redirect.example.test/final"),
             { it.host == "gateway.example.test" },
         ) { revocations++ }
-        assertEquals(1, revocations)
+        assertEquals(2, revocations)
         assertEquals(
             null,
             response("feature_not_allowed", httpStatus = 403, problemStatus = 403).problemCode(),

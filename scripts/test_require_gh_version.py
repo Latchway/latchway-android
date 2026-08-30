@@ -49,9 +49,13 @@ class GitHubCLIVersionTests(unittest.TestCase):
 
     def test_workflow_guards_earliest_signer_workflow_verification(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        guard = workflow.index("python3 scripts/require-gh-version.py")
+        guard = workflow.index("version_line=$(gh version | head -n 1)")
         signer_workflow = workflow.index("--signer-workflow")
         self.assertLess(guard, signer_workflow)
+        authorization = workflow.split("\n  authorize-promotion:\n", 1)[1].split(
+            "\n  verify-promotion:\n", 1
+        )[0]
+        self.assertNotIn("scripts/require-gh-version.py", authorization)
 
 
 if __name__ == "__main__":
