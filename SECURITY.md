@@ -39,6 +39,22 @@ The SDK must never accept an upstream AI-provider secret. Latchway server
 vulnerabilities should be reported against the core repository, with a
 cross-reference here when client behavior is involved.
 
+## Dependency vulnerability gate
+
+CI and release jobs bind every Gradle dependency declaration, version catalog,
+wrapper coordinate, and scanner policy script to the exact candidate commit.
+The pinned Gradle wrapper exports the resolved build, test, sample, and runtime
+Maven graph. The gate installs the checksum-and-size-pinned OSV-Scanner 2.4.0
+binary, downloads the public Maven advisory database, and then matches locally
+with network resolution disabled. No package inventory or repository path is
+sent to OSV.dev.
+
+Run `scripts/scan-dependencies.sh "$(git rev-parse HEAD)"` to reproduce the
+gate. Critical, high, or unknown-severity findings fail the candidate;
+lower-severity findings remain visible for routine remediation. Scanner errors,
+malformed output, an empty inventory, or a missing offline database also fail
+closed.
+
 ## Disclosure
 
 Allow maintainers a reasonable opportunity to investigate and coordinate a fix

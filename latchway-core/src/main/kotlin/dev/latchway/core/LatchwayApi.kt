@@ -142,6 +142,10 @@ public enum class LatchwayErrorCode(public val wireValue: String) {
     NETWORK_UNAVAILABLE("network_unavailable"),
     RESPONSE_INVALID("response_invalid");
 
+    /** Stable public remediation documentation for this error code. */
+    public val documentationUrl: URI
+        get() = URI.create("https://docs.latchway.dev/errors/$wireValue")
+
     public companion object {
         public fun fromWire(value: String?): LatchwayErrorCode =
             entries.firstOrNull { it.wireValue == value } ?: INTERNAL_ERROR
@@ -177,6 +181,7 @@ public class LatchwayException(
         recoveryAction == LatchwayRecoveryAction.REAUTHENTICATE_USER
     public val retryingImmediatelyUseful: Boolean =
         retryable && recoveryAction == LatchwayRecoveryAction.RETRY_LATER
+    public val documentationUrl: URI get() = code.documentationUrl
 
     override fun toString(): String = buildString {
         append("LatchwayException(code=")

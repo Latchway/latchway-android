@@ -81,6 +81,20 @@ val http = OkHttpClient.Builder()
     .build()
 ```
 
+The compiled [`sample-firebase`](sample-firebase) application is the complete
+Firebase + Play Integrity golden journey. It incrementally consumes a streamed
+Responses body, records response and diagnostic request IDs, verifies native
+trust and hardware key backing, reads quota, revokes the installation exactly
+once, signs out Firebase, and closes both SDK and OkHttp resources. Supply its
+safe deployment coordinates with the documented `latchway.gatewayUrl`,
+`latchway.applicationId`, `latchway.environment`, `latchway.feature`,
+`latchway.model`, and `latchway.cloudProjectNumber` Gradle properties.
+
+Every `LatchwayErrorCode` and `LatchwayException` exposes `documentationUrl`,
+which resolves to `https://docs.latchway.dev/errors/<code>`. Applications can
+show that stable remediation link alongside the redacted request ID without
+rendering server detail.
+
 The OkHttp adapter declares the tested `android-okhttp` framework and exact
 OkHttp version as a header pair. It authorizes only the contract-owned data
 routes (`/v1/responses`, `/v1/chat/completions`, `/v1/embeddings`,

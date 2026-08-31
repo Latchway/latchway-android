@@ -1,0 +1,100 @@
+import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
+import org.gradle.api.GradleException
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+
+gradle.projectsEvaluated {
+    def outputValue = rootProject.findProperty("latchway.osv.output")
+    if (!(outputValue instanceof String) || outputValue.isEmpty()) {
+        throw new GradleException("missing -Platchway.osv.output")
+    }
+    def output = new File(outputValue)
+    if (!output.isAbsolute() || output.name != "osv-scanner.json") {
+        throw new GradleException("OSV export must be an absolute osv-scanner.json path")
+    }
+    if (!output.parentFile.isDirectory()) {
+        throw new GradleException("OSV export parent directory does not exist")
+    }
+    def parts = new File(output.parentFile, ".latchway-osv-gradle-parts")
+
+    def partTasks = rootProject.allprojects.collect { project ->
+        project.tasks.register("latchwayOsvExportPart") {
+            doLast {
+                parts.mkdirs()
+                def coordinates = new TreeMap<String, Set<String>>()
+                def configurations = []
+                configurations.addAll(project.buildscript.configurations.findAll {
+                    it.canBeResolved && it.name.toLowerCase(Locale.ROOT).contains("classpath")
+                }.collect { [origin: "buildscript:${it.name}", configuration: it] })
+                configurations.addAll(project.configurations.findAll {
+                    it.canBeResolved && it.name.toLowerCase(Locale.ROOT).contains("classpath")
+                }.collect { [origin: "project:${it.name}", configuration: it] })
+                configurations.each { candidate ->
+                    def configuration = candidate.configuration
+                    try {
+                        configuration.incoming.resolutionResult.allComponents.each { component ->
+                            def identifier = component.id
+                            if (identifier instanceof ModuleComponentIdentifier) {
+                                def coordinate = "${identifier.group}:${identifier.module}:${identifier.version}"
+                                if (!coordinates.containsKey(coordinate)) {
+                                    coordinates[coordinate] = new TreeSet<String>()
+                                }
+                                coordinates[coordinate].add(candidate.origin)
+                            }
+                        }
+                    } catch (Exception error) {
+                        throw new GradleException(
+                            "failed to resolve ${project.path}:${candidate.origin}",
+                            error
+                        )
+                    }
+                }
+                def partName = project.path.replaceAll("[^A-Za-z0-9_.-]", "_") + ".json"
+                new File(parts, partName).setText(JsonOutput.toJson(coordinates) + "\n", "UTF-8")
+            }
+        }
+    }
+
+    rootProject.tasks.register("latchwayOsvExport") {
+        group = "verification"
+        description = "Exports resolved Maven coordinates for an offline OSV scan."
+        dependsOn(partTasks)
+
+        doLast {
+            def coordinates = new TreeSet<String>()
+            parts.listFiles({ file -> file.name.endsWith(".json") } as FileFilter)?.each { part ->
+                def parsed = new JsonSlurper().parse(part)
+                if (!(parsed instanceof Map) ||
+                    !parsed.every { key, value ->
+                        key instanceof String &&
+                            value instanceof List &&
+                            value.every { it instanceof String }
+                    }) {
+                    throw new GradleException("malformed Gradle dependency export part")
+                }
+                coordinates.addAll(parsed.keySet())
+            }
+            if (coordinates.isEmpty()) {
+                throw new GradleException("resolved Gradle graph contains no Maven packages")
+            }
+
+            def packages = coordinates.collect { coordinate ->
+                def pieces = coordinate.split(":", 3)
+                [
+                    package: [
+                        name: "${pieces[0]}:${pieces[1]}",
+                        version: pieces[2],
+                        ecosystem: "Maven",
+                    ],
+                ]
+            }
+            def document = [
+                results: [[
+                    source: [path: "gradle-resolved-graph", type: "lockfile"],
+                    packages: packages,
+                ]],
+            ]
+            output.setText(JsonOutput.toJson(document) + "\n", "UTF-8")
+        }
+    }
+}

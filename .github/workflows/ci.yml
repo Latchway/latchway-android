@@ -33,6 +33,10 @@ jobs:
           packages: ""
       - name: Install pinned Android platform and build tools
         run: scripts/install-android-sdk.sh
+      - name: Scan the exact candidate dependency inventory offline
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: scripts/scan-dependencies.sh "$SOURCE_COMMIT"
       - name: Test Android SDK installation contract
         run: python3 scripts/test-install-android-sdk.py
       - name: Test the OkHttp adapter against the supported minimum
@@ -57,6 +61,7 @@ jobs:
             scripts/stage-play-conformance-candidate.sh
       - name: Test fail-closed release publication and evidence
         run: |
+          python3 scripts/test-dependency-vulnerability-scan.py
           python3 scripts/test_verify_gpg_status.py
           python3 scripts/test_verify_central_release.py
           python3 scripts/test_central_deployment_record.py

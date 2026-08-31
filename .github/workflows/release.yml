@@ -283,6 +283,11 @@ jobs:
           packages: ""
       - name: Install the pinned Android platform and build tools
         run: scripts/install-android-sdk.sh
+      - name: Scan the exact promoted dependency inventory offline
+        env:
+          LATCHWAY_OSV_EVIDENCE_PATH: ${{ runner.temp }}/android-dependency-vulnerability-scan.json
+          SOURCE_COMMIT: ${{ needs.promote.outputs.commit }}
+        run: scripts/scan-dependencies.sh "$SOURCE_COMMIT"
       - name: Run the complete Android SDK gate
         run: |
           export LATCHWAY_VERSION="${RELEASE_TAG#v}"

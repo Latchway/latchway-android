@@ -13,6 +13,14 @@ buildscript {
     dependencies {
         // AGP 9 built-in Kotlin consumes this deliberately pinned KGP version.
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.21")
+        constraints {
+            // Keep AGP's build-only transitive graph above reviewed security fixes.
+            classpath("org.bitbucket.b_c:jose4j:0.9.6")
+            classpath("org.bouncycastle:bcpkix-jdk18on:1.84")
+            classpath("org.bouncycastle:bcprov-jdk18on:1.84")
+            classpath("org.bouncycastle:bcutil-jdk18on:1.84")
+            classpath("org.jdom:jdom2:2.0.6.1")
+        }
     }
 }
 

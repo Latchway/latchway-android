@@ -1,6 +1,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <application android:label="Latchway Firebase Sample" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <meta-data android:name="dev.latchway.gatewayUrl" android:value="${latchwayGatewayUrl}" />
+        <meta-data android:name="dev.latchway.applicationId" android:value="${latchwayApplicationId}" />
+        <meta-data android:name="dev.latchway.environment" android:value="${latchwayEnvironment}" />
+        <meta-data android:name="dev.latchway.feature" android:value="${latchwayFeature}" />
+        <meta-data android:name="dev.latchway.model" android:value="${latchwayModel}" />
+        <meta-data android:name="dev.latchway.cloudProjectNumber" android:value="${latchwayCloudProjectNumber}" />
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
