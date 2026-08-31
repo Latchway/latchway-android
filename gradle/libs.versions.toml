@@ -4,8 +4,13 @@ coroutines = "1.11.0"
 firebase-bom = "34.18.0"
 junit = "4.13.2"
 json = "20250517"
+ktor = "3.3.3"
+langchain4j = "1.19.0"
+langchain4j-okhttp = "1.19.0-beta29"
 okhttp = "5.3.0"
+openai-kotlin = "4.1.0"
 play-integrity = "1.6.0"
+retrofit = "3.0.0"
 
 [libraries]
 coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
@@ -15,9 +20,14 @@ firebase-auth = { module = "com.google.firebase:firebase-auth" }
 firebase-bom = { module = "com.google.firebase:firebase-bom", version.ref = "firebase-bom" }
 junit = { module = "junit:junit", version.ref = "junit" }
 json = { module = "org.json:json", version.ref = "json" }
+ktor-client-okhttp = { module = "io.ktor:ktor-client-okhttp", version.ref = "ktor" }
+langchain4j-http-client-okhttp = { module = "dev.langchain4j:langchain4j-http-client-okhttp", version.ref = "langchain4j-okhttp" }
+langchain4j-open-ai = { module = "dev.langchain4j:langchain4j-open-ai", version.ref = "langchain4j" }
 okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
 okhttp-mockwebserver = { module = "com.squareup.okhttp3:mockwebserver", version.ref = "okhttp" }
+openai-kotlin = { module = "com.aallam.openai:openai-client", version.ref = "openai-kotlin" }
 play-integrity = { module = "com.google.android.play:integrity", version.ref = "play-integrity" }
+retrofit = { module = "com.squareup.retrofit2:retrofit", version.ref = "retrofit" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

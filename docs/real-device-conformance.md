@@ -74,7 +74,9 @@ or root-only evidence to satisfy that gate.
 
 The same restriction applies to framework compatibility: local CI tests the
 adapter against OkHttp 4.9.2 and runs the full suite with the pinned OkHttp
-5.3.0 runtime, but hosted common-framework/server conformance is separate
+5.3.0 runtime. Repository fixtures also exercise the exact Retrofit, Aallam
+OpenAI Kotlin, and LangChain4j/OkHttp-SPI versions recorded in the reuse spike,
+but hosted common-framework/server conformance is separate
 immutable evidence and cannot be inferred from this physical Play run.
 
 ## Protected environment

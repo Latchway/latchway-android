@@ -19,7 +19,6 @@ import dev.latchway.core.IdentityTokenProvider
 import dev.latchway.core.InstallationMetadata
 import dev.latchway.core.KeyPolicy
 import dev.latchway.core.LATCHWAY_SDK_VERSION
-import dev.latchway.core.LATCHWAY_PROTOCOL_VERSION
 import dev.latchway.core.LatchwayComponentClient
 import dev.latchway.core.LatchwayClientPlatform
 import dev.latchway.core.LatchwayCoreClient
@@ -44,7 +43,6 @@ import okhttp3.OkHttpClient
 import okhttp3.OkHttp
 import okhttp3.Request
 import okhttp3.Response
-import okhttp3.Route
 import org.json.JSONObject
 import java.io.Closeable
 import java.lang.ref.WeakReference
@@ -113,106 +111,48 @@ public class LatchwayClient(
         runBlocking { createCore() }
     }
     private val core: LatchwayCoreClient by coreDelegate
+    private val okHttpHooks = LatchwayOkHttpHooks(
+        configuration = configuration,
+        authorizer = { component, request, feature, nonce ->
+            if (component == null) {
+                core.authorize(request.method, request.url.toUri(), feature, nonce)
+            } else {
+                component.authorize(request.method, request.url.toUri(), feature, nonce)
+            }
+        },
+        refresher = { component ->
+            if (component == null) core.refresh() else component.refresh()
+        },
+        clearer = { component, authorization ->
+            if (component == null) {
+                core.clearSessionIfCurrent(authorization)
+            } else {
+                component.clearSessionIfCurrent(authorization)
+            }
+        },
+        terminalResponseObserver = ::applyTrustedTerminalResponse,
+    )
 
-    public fun interceptor(): Interceptor = applicationInterceptor(defaultComponent = null)
+    public fun interceptor(): Interceptor = okHttpHooks.interceptor()
 
     /** Framework-transparent request-time authorization with one native component identity. */
     public fun interceptor(component: LatchwayComponentClient): Interceptor =
-        applicationInterceptor(defaultComponent = component)
-
-    private fun applicationInterceptor(defaultComponent: LatchwayComponentClient?): Interceptor = Interceptor { chain ->
-        val request = chain.request()
-        if (!isGatewayOrigin(request.url)) return@Interceptor chain.proceed(request)
-        val component = defaultComponent ?: request.tag(LatchwayComponentClient::class.java)
-        val feature = request.latchwayFeature()
-        requireAllowedDataPlaneRequest(request, feature)
-        val response = chain.proceed(
-            runBlocking { authorizeInternal(component, request, feature, nonce = null) },
-        )
-        applyTrustedTerminalResponse(response, component)
-        response
-    }
+        okHttpHooks.interceptor(component)
 
     /**
      * Install as a network interceptor. It blocks caller provider credentials
      * before gateway dispatch and Latchway credentials on cross-origin redirects.
      */
-    public fun originGuard(): Interceptor = Interceptor { chain ->
-        val request = chain.request()
-        if (!isGatewayOrigin(request.url)) {
-            if (request.hasLatchwayCredentials() || request.tag(AuthorizedHeaders::class.java) != null) {
-                throw LatchwayException(
-                    code = LatchwayErrorCode.TRANSPORT_DESTINATION_NOT_ALLOWED,
-                    safeMessage = "Latchway credentials cannot follow a redirect to another origin",
-                )
-            }
-            return@Interceptor chain.proceed(request)
-        }
-        val feature = request.latchwayFeature()
-        requireAllowedDataPlaneRequest(request, feature)
-        rejectUpstreamCredentials(request, authorizationWillBeReplaced = true)
-        claimNetworkAttempt(request)
-        // A network interceptor runs once per actual network attempt. Re-sign
-        // here so connection retries and same-origin follow-ups never reuse a
-        // DPoP proof created by the application interceptor.
-        val component = request.tag(LatchwayComponentClient::class.java)
-        val authorized = runBlocking {
-            authorizeInternal(component, request, feature, nonce = request.latchwayRetryNonce())
-        }
-        val outgoingBudget = checkNotNull(authorized.tag(LatchwayNetworkAttemptBudget::class.java))
-        check(outgoingBudget.claim()) { "A fresh network-attempt budget must be unclaimed" }
-        chain.proceed(
-            authorized.newBuilder()
-                .build(),
-        )
-    }
+    public fun originGuard(): Interceptor = okHttpHooks.originGuard()
 
-    public fun authenticator(): Authenticator = object : Authenticator {
-        override fun authenticate(route: Route?, response: Response): Request? {
-            if (!isGatewayOrigin(response.request.url)) return null
-            val request = response.request
-            val component = request.tag(LatchwayComponentClient::class.java)
-            val decision = authenticationDecision(response)
-            if (decision.action == AuthenticationAction.NONE) return null
-            return when (decision.action) {
-                AuthenticationAction.NONCE -> {
-                    val feature = runCatching { request.latchwayFeature() }.getOrNull() ?: return null
-                    val nonce = decision.nonce ?: return null
-                    runCatching {
-                        runBlocking { authorizeInternal(component, request, feature, nonce) }
-                    }.getOrNull()
-                }
-                AuthenticationAction.REFRESH -> runCatching {
-                    val feature = request.latchwayFeature()
-                    runBlocking {
-                        if (component == null) core.refresh() else component.refresh()
-                        authorizeInternal(component, request, feature, nonce = null)
-                    }
-                }.getOrNull()
-                AuthenticationAction.CLEAR -> {
-                    val authorization = request.tag(AuthorizedHeaders::class.java) ?: return null
-                    runCatching {
-                        runBlocking {
-                            if (component == null) {
-                                core.clearSessionIfCurrent(authorization)
-                            } else {
-                                component.clearSessionIfCurrent(authorization)
-                            }
-                        }
-                    }
-                    null
-                }
-                AuthenticationAction.NONE -> null
-            }
-        }
-    }
+    public fun authenticator(): Authenticator = okHttpHooks.authenticator()
 
     public suspend fun authorize(request: Request, feature: String): Request =
-        authorizeInternal(null, request, feature, nonce = null)
+        okHttpHooks.authorize(null, request, feature, nonce = null)
 
     /** Creates exactly one replacement proof for a validated server DPoP nonce challenge. */
     public suspend fun authorize(request: Request, feature: String, nonce: String): Request =
-        authorizeInternal(null, request, feature, nonce)
+        okHttpHooks.authorize(null, request, feature, nonce)
 
     /** Authorizes an OkHttp request with an independently keyed native component session. */
     public suspend fun authorize(
@@ -220,9 +160,7 @@ public class LatchwayClient(
         request: Request,
         feature: String,
         nonce: String? = null,
-    ): Request {
-        return authorizeInternal(component, request, feature, nonce)
-    }
+    ): Request = okHttpHooks.authorize(component, request, feature, nonce)
 
     public suspend fun quota(feature: String): LatchwayQuotaSnapshot = core.quota(feature)
 
@@ -356,62 +294,6 @@ public class LatchwayClient(
         controlClient.dispatcher.executorService.shutdown()
     }
 
-    private suspend fun authorizeInternal(
-        component: LatchwayComponentClient?,
-        request: Request,
-        feature: String,
-        nonce: String?,
-    ): Request {
-        validateFeature(feature)
-        if (!isGatewayOrigin(request.url)) {
-            throw LatchwayException(
-                code = LatchwayErrorCode.TRANSPORT_DESTINATION_NOT_ALLOWED,
-                safeMessage = "Latchway credentials can only be attached to the configured gateway origin",
-            )
-        }
-        requireAllowedDataPlaneRequest(request, feature)
-        rejectUpstreamCredentials(request, authorizationWillBeReplaced = true)
-        val authorized = if (component == null) {
-            core.authorize(request.method, request.url.toUri(), feature, nonce)
-        } else {
-            component.authorize(request.method, request.url.toUri(), feature, nonce)
-        }
-        return authorizedRequest(request, feature, authorized, component, nonce)
-    }
-
-    private fun authorizedRequest(
-        request: Request,
-        feature: String,
-        authorized: AuthorizedHeaders,
-        component: LatchwayComponentClient?,
-        nonce: String?,
-    ): Request = request.newBuilder()
-            .header("Authorization", authorized.authorizationHeader())
-            .header("DPoP", authorized.dpopHeader())
-            .header("X-Latchway-Protocol-Version", LATCHWAY_PROTOCOL_VERSION.toString())
-            .header("X-Latchway-SDK", configuration.clientPlatform.sdkHeaderValue)
-            .header("X-Latchway-SDK-Version", configuration.sdkVersion)
-            .header("X-Latchway-Framework", configuration.framework.id)
-            .header("X-Latchway-Framework-Version", configuration.framework.version)
-            .header("X-Latchway-Request-ID", authorized.requestId)
-            .header("X-Latchway-Feature", feature)
-            .tag(AuthorizedHeaders::class.java, authorized)
-            .tag(LatchwayComponentClient::class.java, component)
-            .tag(LatchwayFeature::class.java, LatchwayFeature(feature))
-            // The authenticator may return a nonce-bound request that still
-            // passes through the network interceptor. Preserve only that
-            // validated nonce so the final network-bound proof remains bound
-            // to the challenge after the interceptor re-signs it.
-            .latchwayRetryNonce(nonce)
-            // Explicit pre-dispatch nonce/session retries receive a new proof
-            // and a new attempt budget. Clones used by OkHttp's internal
-            // retry/follow-up layer share the already-claimed prior budget.
-            .tag(
-                LatchwayNetworkAttemptBudget::class.java,
-                LatchwayNetworkAttemptBudget(authorized.requestId),
-            )
-            .build()
-
     private fun applyTrustedTerminalResponse(
         response: Response,
         component: LatchwayComponentClient?,
@@ -463,28 +345,10 @@ public class LatchwayClient(
         )
     }
 
-    private fun Request.latchwayFeature(): String =
-        tag(LatchwayFeature::class.java)?.value
-            ?: header("X-Latchway-Feature")
-            ?: configuration.defaultFeature
-            ?: throw LatchwayException(
-                code = LatchwayErrorCode.CONFIGURATION_INVALID,
-                safeMessage = "A Latchway feature is required for gateway requests",
-            )
-
     private fun isGatewayOrigin(url: HttpUrl): Boolean =
         url.scheme == configuration.baseUrl.scheme &&
             url.host == configuration.baseUrl.host &&
             url.port == configuration.baseUrl.port
-
-    private fun requireAllowedDataPlaneRequest(request: Request, feature: String) {
-        if (!isAllowedDataPlaneRequest(configuration.baseUrl, request, feature)) {
-            throw LatchwayException(
-                code = LatchwayErrorCode.TRANSPORT_DESTINATION_NOT_ALLOWED,
-                safeMessage = "The request is not an allowed Latchway data-plane route",
-            )
-        }
-    }
 
     private suspend fun registerComponent(
         definitionId: String,
@@ -789,7 +653,7 @@ private val COMPONENT_REVOKE_TERMINAL_CODES = setOf(
     LatchwayErrorCode.INSTALLATION_FAMILY_NOT_FOUND,
 )
 
-private fun validateFeature(feature: String) {
+internal fun validateFeature(feature: String) {
     require(Regex("^[a-z][a-z0-9_-]{0,62}$").matches(feature)) { "feature is not a canonical identifier" }
 }
 
@@ -968,7 +832,7 @@ private fun upstreamCredentialError(): LatchwayException = LatchwayException(
     safeMessage = "Upstream provider credentials must not be supplied to Latchway",
 )
 
-private fun Request.hasLatchwayCredentials(): Boolean =
+internal fun Request.hasLatchwayCredentials(): Boolean =
     header("DPoP") != null || header("Authorization")?.startsWith("DPoP ") == true ||
         headers.names().any { it.startsWith("X-Latchway-", ignoreCase = true) }
 

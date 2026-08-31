@@ -268,19 +268,25 @@ class OkHttpLatchwayTransportTest {
 }
 
 /** A dependency-neutral HTTP/1.1 fixture so the same tests run on OkHttp 4.x and 5.x. */
-private class LoopbackHttpServer {
+internal class LoopbackHttpServer {
     private val socket = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
     private val responses = LinkedBlockingQueue<LoopbackResponse>()
+    private val controlResponses = LinkedBlockingQueue<LoopbackResponse>()
     private val requests = LinkedBlockingQueue<LoopbackRecordedRequest>()
+    private val dataRequests = LinkedBlockingQueue<LoopbackRecordedRequest>()
     private val responseWorkers = Executors.newCachedThreadPool { task ->
         Thread(task, "latchway-loopback-response").apply { isDaemon = true }
     }
     private val started = AtomicBoolean(false)
     private val closed = AtomicBoolean(false)
     private val count = AtomicInteger(0)
+    private val dataCount = AtomicInteger(0)
+    private val controlCount = AtomicInteger(0)
     private var acceptThread: Thread? = null
 
     val requestCount: Int get() = count.get()
+    val dataRequestCount: Int get() = dataCount.get()
+    val controlRequestCount: Int get() = controlCount.get()
 
     fun start() {
         check(started.compareAndSet(false, true)) { "Loopback server already started" }
@@ -294,6 +300,10 @@ private class LoopbackHttpServer {
         responses.add(response)
     }
 
+    fun enqueueControl(response: LoopbackResponse) {
+        controlResponses.add(response)
+    }
+
     fun url(path: String): HttpUrl {
         val normalized = if (path.startsWith('/')) path else "/$path"
         return "http://127.0.0.1:${socket.localPort}$normalized".toHttpUrl()
@@ -301,6 +311,9 @@ private class LoopbackHttpServer {
 
     fun takeRequest(): LoopbackRecordedRequest =
         checkNotNull(requests.poll(5, TimeUnit.SECONDS)) { "No loopback request arrived" }
+
+    fun takeDataRequest(): LoopbackRecordedRequest =
+        checkNotNull(dataRequests.poll(5, TimeUnit.SECONDS)) { "No loopback data-plane request arrived" }
 
     fun shutdown() {
         if (!closed.compareAndSet(false, true)) return
@@ -316,7 +329,16 @@ private class LoopbackHttpServer {
         while (!closed.get()) {
             try {
                 val accepted = socket.accept()
-                responseWorkers.execute { serve(accepted) }
+                responseWorkers.execute {
+                    try {
+                        serve(accepted)
+                    } catch (_: SocketException) {
+                        // Streaming fixtures intentionally let clients close
+                        // the socket before the delayed terminal chunk.
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                    }
+                }
             } catch (_: SocketException) {
                 if (!closed.get()) throw IllegalStateException("Loopback accept failed")
             }
@@ -347,18 +369,39 @@ private class LoopbackHttpServer {
                 if (read == -1) throw EOFException("Request body ended unexpectedly")
                 offset += read
             }
-            requests.put(
-                LoopbackRecordedRequest(
-                    requestLine = requestLine,
-                    headers = CaseInsensitiveHeaders(headers),
-                    body = Buffer().write(body),
-                ),
+            val recorded = LoopbackRecordedRequest(
+                requestLine = requestLine,
+                headers = CaseInsensitiveHeaders(headers),
+                body = Buffer().write(body),
             )
+            requests.put(recorded)
             count.incrementAndGet()
 
-            val response = responses.poll(5, TimeUnit.SECONDS)
+            val requestTarget = requestLine.substringAfter(' ').substringBefore(' ')
+            val isControlRequest = requestTarget.startsWith("/client/")
+            if (isControlRequest) {
+                controlCount.incrementAndGet()
+            } else {
+                dataRequests.put(recorded)
+                dataCount.incrementAndGet()
+            }
+
+            // Dedicated control responses let the framework fixtures share a
+            // server with data traffic. Existing transport tests that enqueue
+            // a generic `/client/...` response retain their original behavior.
+            val responseQueue = if (isControlRequest && controlResponses.isNotEmpty()) {
+                controlResponses
+            } else {
+                responses
+            }
+            val response = responseQueue.poll(5, TimeUnit.SECONDS)
                 ?: LoopbackResponse().setResponseCode(500).setBody("No response enqueued")
             val output = BufferedOutputStream(connected.getOutputStream())
+            val requestId = headers.entries
+                .firstOrNull { it.key.equals("X-Latchway-Request-ID", ignoreCase = true) }
+                ?.value
+            val responseBody = response.renderBody(requestId)
+            val responseHeaders = response.renderHeaders(requestId)
             val statusText = when (response.code) {
                 200 -> "OK"
                 201 -> "Created"
@@ -366,20 +409,39 @@ private class LoopbackHttpServer {
                 else -> "Test response"
             }
             output.write("HTTP/1.1 ${response.code} $statusText\r\n".toByteArray(StandardCharsets.US_ASCII))
-            for ((name, value) in response.headers) {
+            for ((name, value) in responseHeaders) {
                 output.write("$name: $value\r\n".toByteArray(StandardCharsets.US_ASCII))
             }
-            output.write("Content-Length: ${response.body.size}\r\n".toByteArray(StandardCharsets.US_ASCII))
+            if (response.chunks == null) {
+                output.write("Content-Length: ${responseBody.size}\r\n".toByteArray(StandardCharsets.US_ASCII))
+            } else {
+                output.write("Transfer-Encoding: chunked\r\n".toByteArray(StandardCharsets.US_ASCII))
+            }
             output.write("Connection: close\r\n\r\n".toByteArray(StandardCharsets.US_ASCII))
             output.flush()
-            if (response.bodyDelayMillis > 0) Thread.sleep(response.bodyDelayMillis)
-            output.write(response.body)
-            output.flush()
+            val chunks = response.chunks
+            if (chunks == null) {
+                if (response.bodyDelayMillis > 0) Thread.sleep(response.bodyDelayMillis)
+                output.write(responseBody)
+                output.flush()
+            } else {
+                chunks.forEachIndexed { index, chunk ->
+                    output.write("${chunk.size.toString(16)}\r\n".toByteArray(StandardCharsets.US_ASCII))
+                    output.write(chunk)
+                    output.write("\r\n".toByteArray(StandardCharsets.US_ASCII))
+                    output.flush()
+                    if (index != chunks.lastIndex && response.chunkDelayMillis > 0) {
+                        Thread.sleep(response.chunkDelayMillis)
+                    }
+                }
+                output.write("0\r\n\r\n".toByteArray(StandardCharsets.US_ASCII))
+                output.flush()
+            }
         }
     }
 }
 
-private class LoopbackResponse {
+internal class LoopbackResponse {
     var code: Int = 200
         private set
     val headers: MutableList<Pair<String, String>> = mutableListOf()
@@ -387,6 +449,11 @@ private class LoopbackResponse {
         private set
     var bodyDelayMillis: Long = 0
         private set
+    var chunks: List<ByteArray>? = null
+        private set
+    var chunkDelayMillis: Long = 0
+        private set
+    private var latchwayProblem: LatchwayProblem? = null
 
     fun setResponseCode(value: Int): LoopbackResponse = apply { code = value }
 
@@ -401,15 +468,63 @@ private class LoopbackResponse {
     fun setBodyDelay(value: Long, unit: TimeUnit): LoopbackResponse = apply {
         bodyDelayMillis = unit.toMillis(value)
     }
+
+    fun setChunkedBody(
+        chunks: List<String>,
+        delay: Long,
+        unit: TimeUnit,
+    ): LoopbackResponse = apply {
+        require(chunks.isNotEmpty())
+        this.chunks = chunks.map { it.toByteArray(StandardCharsets.UTF_8) }
+        chunkDelayMillis = unit.toMillis(delay)
+    }
+
+    fun setLatchwayProblem(
+        code: String,
+        status: Int,
+        retryable: Boolean,
+    ): LoopbackResponse = apply {
+        latchwayProblem = LatchwayProblem(code, status, retryable)
+        this.code = status
+    }
+
+    internal fun renderBody(requestId: String?): ByteArray {
+        val problem = latchwayProblem ?: return body
+        val correlated = requireNotNull(requestId) { "A Latchway problem requires a request ID" }
+        return org.json.JSONObject()
+            .put("type", "https://latchway.dev/problems/${problem.code}")
+            .put("title", "Request rejected")
+            .put("status", problem.status)
+            .put("detail", "The request was rejected before upstream dispatch")
+            .put("code", problem.code)
+            .put("request_id", correlated)
+            .put("retryable", problem.retryable)
+            .toString()
+            .toByteArray(StandardCharsets.UTF_8)
+    }
+
+    internal fun renderHeaders(requestId: String?): List<Pair<String, String>> = buildList {
+        addAll(headers)
+        if (latchwayProblem != null) {
+            add("Content-Type" to "application/problem+json")
+            add("X-Latchway-Request-ID" to requireNotNull(requestId))
+        }
+    }
+
+    private data class LatchwayProblem(
+        val code: String,
+        val status: Int,
+        val retryable: Boolean,
+    )
 }
 
-private data class LoopbackRecordedRequest(
+internal data class LoopbackRecordedRequest(
     val requestLine: String,
     val headers: CaseInsensitiveHeaders,
     val body: Buffer,
 )
 
-private class CaseInsensitiveHeaders(values: Map<String, String>) {
+internal class CaseInsensitiveHeaders(values: Map<String, String>) {
     private val values = Collections.unmodifiableMap(values.toMap())
 
     operator fun get(name: String): String? =

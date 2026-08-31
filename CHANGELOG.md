@@ -18,6 +18,11 @@ Versioning once package publication begins.
   component diagnostics.
 - Contract-owned framework metadata for the pinned OkHttp integration and
   exact route-policy tests for standard and restricted opaque data paths.
+- Repository-only Retrofit, Aallam OpenAI Kotlin, and LangChain4j runtime
+  conformance fixtures that reuse the production OkHttp hooks and control
+  transport, verifying authorization, streaming, cancellation where exposed,
+  bounded replay,
+  framework-native error mapping, and credential redaction.
 
 ### Changed
 

@@ -1,6 +1,6 @@
 # Android OkHttp request-time reuse spike
 
-Status: locally verified source spike on 2026-08-30. This document is not a
+Status: locally verified source/runtime spike on 2026-08-31. This document is not a
 Maven release, hosted conformance, or physical Play Integrity claim.
 
 ## Decision
@@ -71,28 +71,66 @@ component proofs and rotate or clear only that component session. No component
 token, grant, wrapping key, or private signing material crosses into a provider
 request model.
 
-## Versions and gates actually exercised
+## Framework fixtures actually exercised
 
-The dependency seam is `-Platchway.okhttp.version=<version>` in
-`latchway-okhttp`; ordinary builds use the catalog-pinned version.
+The fixtures use each library's real HTTP integration and the same internal
+OkHttp hook implementation as `LatchwayClient`. They do not duplicate DPoP,
+session refresh, route checks, credential rejection, or replay policy in a
+framework-specific adapter. The only synthetic boundary is the repository
+test harness that supplies a real core session without requiring Android
+Keystore or a production control plane. Challenge, session, and refresh calls
+still traverse the production `OkHttpLatchwayTransport`; the loopback fixture
+records those separately from framework data-plane calls.
 
-| OkHttp | Local evidence | Result |
+| Fixture | Exact local versions | What the fixture proves |
 | --- | --- | --- |
-| 4.9.2 | `:latchway-okhttp:testDebugUnitTest -Platchway.okhttp.version=4.9.2` | Passed |
-| 5.3.0 | Full `test assemble lint`, including route, authenticator, streaming, cancellation, and replay tests | Passed |
+| Raw OkHttp | 4.9.2 and 5.3.0 | Request authorization, redirects, route policy, streaming, cancellation, credential rejection, and bounded replay |
+| Retrofit | 2.11.0 and 3.0.0 | A real Retrofit `Call` uses the configured client; `@Streaming` is incremental, `Call.cancel()` reaches OkHttp, a one-shot body is not replayed, a replayable body receives only the correlated safe refresh, and a 429 problem remains intact for caller-owned mapping |
+| Aallam OpenAI Kotlin | 4.0.1 and 4.1.0 with Ktor OkHttp 3.3.3 | Chat completion and SSE use a preconfigured Latchway OkHttp engine; Flow cancellation cancels the call; retries are explicitly disabled; HTTP 429 maps to the client's `RateLimitException` |
+| LangChain4j OpenAI | 1.19.0 with OkHttp SPI 1.19.0-beta29 | Synchronous and incremental streaming chat use the injected Latchway builder; model retries are explicitly disabled; HTTP 429 maps to LangChain4j's `RateLimitException` |
+
+Ordinary builds use the catalog-pinned endpoints. CI also exercises Retrofit
+2.11.0 and Aallam OpenAI Kotlin 4.0.1 through Gradle compatibility properties.
+LangChain4j's OkHttp SPI is a separately versioned beta artifact, so the local
+claim is limited to the exact pair above; this repository does not infer a
+stable or contiguous compatibility range.
+
+The framework dependencies exclude their transitive OkHttp artifacts in the
+fixture configuration, which strictly reuses the adapter-selected version.
+This prevents a newer Ktor or LangChain4j dependency from silently upgrading a
+supposed 4.9.2 run. The complete catalog-framework suite passes on both OkHttp
+4.9.2 and 5.3.0; the lower framework endpoints run on pinned OkHttp 5.3.0.
+
+All three libraries ultimately dispatch through OkHttp, so the wire contract
+truthfully reports `android-okhttp` and `okhttp3.OkHttp.VERSION`. It does not
+pretend that a generic transport seam is a contract-owned Retrofit, Aallam, or
+LangChain4j adapter. Every recorded request contains DPoP authorization,
+feature, protocol, SDK/framework, version, and request-ID headers, while the
+library's non-secret placeholder Authorization is gone and no API-key header
+is present.
+
+Retrofit deliberately leaves HTTP error interpretation to the application;
+its response exposes the original status and problem body. Aallam and
+LangChain4j classify the tested 429 by HTTP status, but neither preserves the
+Latchway problem `code` as a typed field. Applications that need canonical
+Latchway error metadata should use direct OkHttp/Retrofit response handling
+until a first-party framework error adapter exists. LangChain4j 1.19.0's
+streaming chat surface does not return a cancellation handle, so this fixture
+proves incremental delivery but does not claim framework-level cancellation.
+Koog and OpenAI Java remain untested here.
 
 The transport tests use a dependency-neutral loopback HTTP/1.1 fixture. The
 test server therefore cannot upgrade or replace the OkHttp artifact selected by
-the compatibility property, and both rows execute the same redirect,
+the compatibility property, and both OkHttp endpoints execute the same redirect,
 credential-boundary, streaming, cancellation, and control-body assertions.
 
 The publication gate also produced all five `dev.latchway` Maven coordinates
 and compiled independent offline Android consumers using Gradle module metadata
-and POM-only resolution. This establishes source and binary dependency reuse
-for the tested seam; it does not establish compatibility with Retrofit,
-OpenAI's Kotlin client, LangChain4j, Koog, or every OkHttp version between the
-two tested endpoints. Those integrations require their own hosted fixture and
-server-conformance evidence before being added to a support matrix.
+and POM-only resolution. The third-party libraries above are
+`testImplementation` dependencies and do not appear in a Latchway publication
+or force an application to select an AI framework. These local fixtures do not
+establish hosted server conformance, a published support matrix, or compatibility
+with untested versions between the named endpoints.
 
 ## Remaining external proof
 

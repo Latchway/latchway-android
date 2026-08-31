@@ -37,6 +37,14 @@ jobs:
         run: python3 scripts/test-install-android-sdk.py
       - name: Test the OkHttp adapter against the supported minimum
         run: ./gradlew :latchway-okhttp:testDebugUnitTest -Platchway.okhttp.version=4.9.2 --no-daemon
+      - name: Test lower framework fixture endpoints
+        run: |
+          ./gradlew :latchway-okhttp:testDebugUnitTest \
+            -Platchway.retrofit.version=2.11.0 \
+            -Platchway.openaiKotlin.version=4.0.1 \
+            --tests '*RetrofitFrameworkConformanceTest' \
+            --tests '*OpenAiKotlinFrameworkConformanceTest' \
+            --no-daemon
       - name: Run unit, assembly, and lint gates
         run: ./gradlew test assemble lint --no-daemon
       - name: Test fail-closed physical-evidence validation

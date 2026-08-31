@@ -29,6 +29,11 @@ Gradle 9.5.0, Kotlin 2.3.21, Java 17 bytecode, OkHttp 5.3.0, Play Integrity
 1.6.0, and the Firebase 34.18.0 BOM.
 CI also runs the adapter suite against the supported 4.9.2 minimum; the
 full unit, streaming, cancellation, and replay suite runs on pinned 5.3.0.
+Repository-only framework fixtures additionally pin Retrofit 3.0.0, Aallam
+OpenAI Kotlin 4.1.0 with Ktor OkHttp 3.3.3, and LangChain4j 1.19.0 with its
+1.19.0-beta29 OkHttp SPI. Retrofit 2.11.0 and Aallam 4.0.1 are lower CI
+endpoints. These are local compatibility results, not a published support
+matrix.
 
 ## Usage
 
@@ -84,6 +89,58 @@ every permitted network attempt. An internal second connection attempt is
 rejected as indeterminate instead of replaying a request that may have reached
 the upstream; an explicit contract-safe nonce/session follow-up or a new
 framework call receives a fresh proof.
+
+### Reusing the client from HTTP and AI frameworks
+
+Retrofit accepts the configured client directly. Aallam OpenAI Kotlin accepts
+it through Ktor's preconfigured OkHttp engine, and LangChain4j accepts the
+configured builder through its OkHttp HTTP-client SPI. In every case, point the
+framework at the Latchway gateway and use only a conspicuous non-secret
+placeholder when a framework insists on an API-key-shaped value:
+
+```kotlin
+fun latchwayHttpBuilder() = OkHttpClient.Builder()
+    .addInterceptor(latchway.interceptor())
+    .addNetworkInterceptor(latchway.originGuard())
+    .authenticator(latchway.authenticator())
+
+val retrofit = Retrofit.Builder()
+    .baseUrl("https://gateway.example.com/")
+    .client(latchwayHttpBuilder().build())
+    .build()
+
+val openAiEngine = io.ktor.client.engine.okhttp.OkHttp.create {
+    preconfigured = latchwayHttpBuilder().build()
+}
+val openAi = OpenAI(
+    OpenAIConfig(
+        token = "latchway-placeholder-not-a-provider-secret",
+        host = OpenAIHost(baseUrl = "https://gateway.example.com/v1/"),
+        retry = RetryStrategy(maxRetries = 0),
+        engine = openAiEngine,
+    ),
+)
+
+val langChainHttp = dev.langchain4j.http.client.okhttp.OkHttpClient.builder()
+    .okHttpClientBuilder(latchwayHttpBuilder())
+val chat = OpenAiChatModel.builder()
+    .baseUrl("https://gateway.example.com/v1")
+    .apiKey("latchway-placeholder-not-a-provider-secret")
+    .modelName("server-configured-model")
+    .maxRetries(0)
+    .httpClientBuilder(langChainHttp)
+    .build()
+```
+
+Disable framework-owned retries: Latchway's authenticator already owns the
+single bounded, request-correlated nonce/session follow-up, and the network
+guard rejects any unsafe or indeterminate replay. Retrofit streaming and
+cancellation, plus Aallam Flow streaming/cancellation, are verified locally.
+LangChain4j streaming is incremental, but its tested streaming API exposes no
+cancellation handle. Framework-native 429 exceptions preserve the status class
+but not Latchway's typed problem `code`; use direct OkHttp/Retrofit error-body
+handling when that metadata is required. See the
+[exact local fixture evidence](engineering/spikes/android-okhttp-reuse.md).
 
 For per-request routing, use `request.newBuilder().latchwayFeature("feature")`
 or call `latchway.authorize(request, feature)` directly. Credentials are only
