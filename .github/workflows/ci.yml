@@ -21,6 +21,16 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+      - name: Install pinned actionlint
+        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
+        with:
+          install: true
+          cache: false
+      - name: Validate every workflow with pinned actionlint
+        run: |
+          actionlint_version=$(actionlint -version | sed -n '1p')
+          test "$actionlint_version" = "1.7.12"
+          actionlint -shellcheck= -pyflakes= -oneline .github/workflows/*.yml
       - name: Configure Java 17
         uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
         with:
@@ -62,14 +72,7 @@ jobs:
       - name: Test fail-closed release publication and evidence
         run: |
           python3 scripts/test-dependency-vulnerability-scan.py
-          python3 scripts/test_verify_gpg_status.py
-          python3 scripts/test_verify_central_release.py
-          python3 scripts/test_central_deployment_record.py
-          python3 scripts/test_publish_central_policy.py
-          python3 scripts/test_reconcile_github_release.py
-          python3 scripts/test_verify_github_release_attestation.py
-          python3 scripts/test_release_promotion.py
-          python3 -m unittest scripts/test_build_docs_bundle.py
+          python3 scripts/run-offline-release-tests.py
           bash -n scripts/build-central-portal-bundle.sh \
             scripts/publish-central.sh scripts/verify-central-release.sh
       - name: Publish and compile an independent offline consumer

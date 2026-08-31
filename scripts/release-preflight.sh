@@ -60,4 +60,6 @@ grep -Fq "## [$version]" "$repository_root/CHANGELOG.md" || {
   exit 1
 }
 
+python3 "$repository_root/scripts/run-offline-release-tests.py"
+
 echo "Android release preflight passed for $tag"
