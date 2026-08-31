@@ -872,6 +872,13 @@ jobs:
           ref: ${{ needs.promote.outputs.commit }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Build deterministic source-provenanced documentation bundle
+        run: |
+          python3 scripts/build_docs_bundle.py \
+            --output-dir "$RUNNER_TEMP/android-docs-bundle" \
+            --version "$RELEASE_VERSION" \
+            --commit "$RELEASE_COMMIT" \
+            --require-clean
       - name: Download exact signed inputs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -950,10 +957,14 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
+          install -m 600 -- \
+            "$RUNNER_TEMP/android-docs-bundle/docs-bundle-$RELEASE_VERSION.tar.gz" \
+            build/release/
           cd build/release
           sha256sum \
             "latchway-android-$RELEASE_VERSION-maven-repository.zip" \
             "latchway-android-$RELEASE_VERSION-central-portal.zip" \
+            "docs-bundle-$RELEASE_VERSION.tar.gz" \
             github-release-tag-binding.json \
             latchway-maven-signing-public-key.asc \
             maven-central-upload-intent.json \
@@ -967,6 +978,7 @@ jobs:
           install -m 600 -- \
             "latchway-android-$RELEASE_VERSION-maven-repository.zip" \
             "latchway-android-$RELEASE_VERSION-central-portal.zip" \
+            "docs-bundle-$RELEASE_VERSION.tar.gz" \
             SHA256SUMS github-release-tag-binding.json latchway-maven-signing-public-key.asc \
             maven-central-upload-intent.json maven-central-deployment.json \
             maven-central-deployment-status.json maven-central-release-evidence.json \
@@ -1037,6 +1049,7 @@ jobs:
           expected=(
             "latchway-android-$RELEASE_VERSION-maven-repository.zip"
             "latchway-android-$RELEASE_VERSION-central-portal.zip"
+            "docs-bundle-$RELEASE_VERSION.tar.gz"
             SHA256SUMS
             github-release-tag-binding.json
             latchway-maven-signing-public-key.asc
@@ -1089,6 +1102,7 @@ jobs:
           assets=(
             "$asset_root/latchway-android-$RELEASE_VERSION-maven-repository.zip"
             "$asset_root/latchway-android-$RELEASE_VERSION-central-portal.zip"
+            "$asset_root/docs-bundle-$RELEASE_VERSION.tar.gz"
             "$asset_root/SHA256SUMS"
             "$asset_root/github-release-tag-binding.json"
             "$asset_root/latchway-maven-signing-public-key.asc"
@@ -1104,7 +1118,7 @@ jobs:
             test -s "$asset"
             printf '%s\n' "${asset##*/}" >> "$RUNNER_TEMP/expected-assets.txt"
           done
-          test "$(sort -u "$RUNNER_TEMP/expected-assets.txt" | wc -l | tr -d ' ')" = 9
+          test "$(sort -u "$RUNNER_TEMP/expected-assets.txt" | wc -l | tr -d ' ')" = 10
           expected_names=$(sort "$RUNNER_TEMP/expected-assets.txt" | jq --raw-input --slurp 'split("\n")[:-1]')
 
           message="Android SDK $RELEASE_TAG

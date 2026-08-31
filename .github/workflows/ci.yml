@@ -64,6 +64,7 @@ jobs:
           python3 scripts/test_reconcile_github_release.py
           python3 scripts/test_verify_github_release_attestation.py
           python3 scripts/test_release_promotion.py
+          python3 -m unittest scripts/test_build_docs_bundle.py
           bash -n scripts/build-central-portal-bundle.sh \
             scripts/publish-central.sh scripts/verify-central-release.sh
       - name: Publish and compile an independent offline consumer

@@ -88,6 +88,7 @@ records those separately from framework data-plane calls.
 | Retrofit | 2.11.0 and 3.0.0 | A real Retrofit `Call` uses the configured client; `@Streaming` is incremental, `Call.cancel()` reaches OkHttp, a one-shot body is not replayed, a replayable body receives only the correlated safe refresh, and a 429 problem remains intact for caller-owned mapping |
 | Aallam OpenAI Kotlin | 4.0.1 and 4.1.0 with Ktor OkHttp 3.3.3 | Chat completion and SSE use a preconfigured Latchway OkHttp engine; Flow cancellation cancels the call; retries are explicitly disabled; HTTP 429 maps to the client's `RateLimitException` |
 | LangChain4j OpenAI | 1.19.0 with OkHttp SPI 1.19.0-beta29 | Synchronous and incremental streaming chat use the injected Latchway builder; model retries are explicitly disabled; HTTP 429 maps to LangChain4j's `RateLimitException` |
+| Koog OpenAI | 1.1.1 with OkHttp/okhttp-sse 5.3.0 | Its public `fromOkHttpClient` seam uses the production hooks with an absolute chat path; chat, tools, JSON schema, incremental SSE, final usage, Flow cancellation, timeout, request-ID/error preservation, and native retry proof freshness pass |
 
 Ordinary builds use the catalog-pinned endpoints. CI also exercises Retrofit
 2.11.0 and Aallam OpenAI Kotlin 4.0.1 through Gradle compatibility properties.
@@ -97,14 +98,18 @@ stable or contiguous compatibility range.
 
 The framework dependencies exclude their transitive OkHttp artifacts in the
 fixture configuration, which strictly reuses the adapter-selected version.
-This prevents a newer Ktor or LangChain4j dependency from silently upgrading a
-supposed 4.9.2 run. The complete catalog-framework suite passes on both OkHttp
-4.9.2 and 5.3.0; the lower framework endpoints run on pinned OkHttp 5.3.0.
+This prevents a newer Ktor, LangChain4j, or Koog dependency from silently
+upgrading a supposed 4.9.2 run. The complete Koog fixture passes on 5.3.0. Its
+four non-streaming cases also pass on 4.9.2, while the two SSE cases are
+deliberately skipped there because Koog 1.1.1 links the OkHttp 5
+`EventSources.createFactory(Call.Factory)` descriptor. All non-Koog adapter
+tests continue to run on both Latchway OkHttp endpoints; the lower Retrofit and
+Aallam framework endpoints run on pinned OkHttp 5.3.0.
 
-All three libraries ultimately dispatch through OkHttp, so the wire contract
+All four libraries ultimately dispatch through OkHttp, so the wire contract
 truthfully reports `android-okhttp` and `okhttp3.OkHttp.VERSION`. It does not
 pretend that a generic transport seam is a contract-owned Retrofit, Aallam, or
-LangChain4j adapter. Every recorded request contains DPoP authorization,
+LangChain4j/Koog adapter. Every recorded request contains DPoP authorization,
 feature, protocol, SDK/framework, version, and request-ID headers, while the
 library's non-secret placeholder Authorization is gone and no API-key header
 is present.
@@ -117,7 +122,22 @@ Latchway error metadata should use direct OkHttp/Retrofit response handling
 until a first-party framework error adapter exists. LangChain4j 1.19.0's
 streaming chat surface does not return a cancellation handle, so this fixture
 proves incremental delivery but does not claim framework-level cancellation.
-Koog and OpenAI Java remain untested here.
+Koog retains the canonical request ID and problem body in its
+`LLMClientException` text but does not expose a typed Latchway error. OpenAI
+Java remains untested here.
+
+Koog's generic seam is sufficient and no public Latchway framework module is
+needed, but the exact upstream release has two dependency constraints that an
+Android application must make explicit. `http-client-okhttp` 1.1.1 may select
+Koog's Android `utils` variant even though it references the JVM
+`SuitableForIO` actual, so the verified graph includes
+`ai.koog:utils-jvm:1.1.1`. The public wrapper also exposes `KLogger` while the
+dependency is not on its compile API, so the verified graph explicitly adds
+`io.github.oshai:kotlin-logging:8.0.01`. Full SSE requires OkHttp/okhttp-sse
+5.3.0; 4.9.2 does not have the method descriptor linked by Koog 1.1.1. The
+spike is based on the official Koog `1.1.1` tag at
+`1bdbc29c89485a13aef85600a6f90945a07eb8ef`; it does not infer support for
+another Koog or OkHttp version.
 
 The transport tests use a dependency-neutral loopback HTTP/1.1 fixture. The
 test server therefore cannot upgrade or replace the OkHttp artifact selected by

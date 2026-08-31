@@ -31,9 +31,10 @@ CI also runs the adapter suite against the supported 4.9.2 minimum; the
 full unit, streaming, cancellation, and replay suite runs on pinned 5.3.0.
 Repository-only framework fixtures additionally pin Retrofit 3.0.0, Aallam
 OpenAI Kotlin 4.1.0 with Ktor OkHttp 3.3.3, and LangChain4j 1.19.0 with its
-1.19.0-beta29 OkHttp SPI. Retrofit 2.11.0 and Aallam 4.0.1 are lower CI
-endpoints. These are local compatibility results, not a published support
-matrix.
+1.19.0-beta29 OkHttp SPI. Koog 1.1.1 is exercised through its public
+preconfigured-OkHttp seam on OkHttp 5.3.0. Retrofit 2.11.0 and Aallam 4.0.1
+are lower CI endpoints. These are local compatibility results, not a
+published support matrix.
 
 ## Usage
 
@@ -130,6 +131,21 @@ val chat = OpenAiChatModel.builder()
     .maxRetries(0)
     .httpClientBuilder(langChainHttp)
     .build()
+
+// Koog 1.1.1's preconfigured-OkHttp helper has no base-URL argument, so use
+// its public primary constructor with an absolute provider path.
+val koogHttp = ai.koog.http.client.KoogHttpClient.fromOkHttpClient(
+    clientName = "LatchwayKoog",
+    logger = io.github.oshai.kotlinlogging.KotlinLogging.logger { },
+    okHttpClient = latchwayHttpBuilder().build(),
+)
+val koog = ai.koog.prompt.executor.clients.openai.OpenAILLMClient(
+    settings = ai.koog.prompt.executor.clients.openai.OpenAIClientSettings(
+        baseUrl = "https://gateway.example.com/",
+        chatCompletionsPath = "https://gateway.example.com/v1/chat/completions",
+    ),
+    httpClient = koogHttp,
+)
 ```
 
 Disable framework-owned retries: Latchway's authenticator already owns the
@@ -141,6 +157,15 @@ cancellation handle. Framework-native 429 exceptions preserve the status class
 but not Latchway's typed problem `code`; use direct OkHttp/Retrofit error-body
 handling when that metadata is required. See the
 [exact local fixture evidence](engineering/spikes/android-okhttp-reuse.md).
+
+Koog's exact 1.1.1 Android graph needs explicit
+`ai.koog:utils-jvm:1.1.1` and
+`io.github.oshai:kotlin-logging:8.0.01` application dependencies because its
+JVM OkHttp artifact can otherwise select the Android `utils` variant while
+referencing a JVM actual, and its public wrapper requires `KLogger` at compile
+time. Full streaming additionally requires OkHttp 5.x; Koog 1.1.1 calls an
+`okhttp-sse` 5.x method that is absent in 4.9.2. The tested full tuple is Koog
+1.1.1 plus OkHttp/okhttp-sse 5.3.0. No compatibility range is inferred.
 
 For per-request routing, use `request.newBuilder().latchwayFeature("feature")`
 or call `latchway.authorize(request, feature)` directly. Credentials are only

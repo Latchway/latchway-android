@@ -616,6 +616,19 @@ class ReleaseWorkflowTests(unittest.TestCase):
 
         self.assertIn("actions/checkout", verifier)
         self.assertIn("scripts/verify-central-release.sh", verifier)
+        self.assertIn("python3 scripts/build_docs_bundle.py", verifier)
+        self.assertGreaterEqual(
+            verifier.count('"docs-bundle-$RELEASE_VERSION.tar.gz"'),
+            2,
+        )
+        self.assertIn(
+            '"$RUNNER_TEMP/android-docs-bundle/docs-bundle-$RELEASE_VERSION.tar.gz"',
+            verifier,
+        )
+        self.assertIn(
+            'test "$(sort -u "$RUNNER_TEMP/expected-assets.txt" | wc -l | tr -d \' \')" = 10',
+            trusted,
+        )
         self.assertNotIn("secrets.", verifier)
         self.assertNotIn("LATCHWAY_MAVEN_CENTRAL_USERNAME", verifier)
         self.assertNotIn("LATCHWAY_SIGNING_KEY", verifier)

@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "repository": "https://github.com/Latchway/latchway-android",
+  "release": "v1.0.0",
+  "version": "1.0.0",
+  "package": "dev.latchway",
+  "documents": [
+    {"path": "quickstart/basic-client.kt", "kind": "quickstart", "source": {"file": "sample-basic/src/main/kotlin/dev/latchway/sample/basic/MainActivity.kt", "start_line": 1, "end_line": 39}},
+    {"path": "quickstart/firebase-auth.kt", "kind": "quickstart", "source": {"file": "sample-firebase/src/main/kotlin/dev/latchway/sample/firebase/MainActivity.kt", "start_line": 1, "end_line": 29}},
+    {"path": "frameworks/retrofit.kt", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt", "start_line": 28, "end_line": 74}},
+    {"path": "frameworks/openai-kotlin.kt", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/OpenAiKotlinFrameworkConformanceTest.kt", "start_line": 28, "end_line": 56}},
+    {"path": "frameworks/langchain4j.kt", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/LangChain4jFrameworkConformanceTest.kt", "start_line": 21, "end_line": 56}},
+    {"path": "frameworks/koog.kt", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt", "start_line": 42, "end_line": 88}},
+    {"path": "release-notes.md", "kind": "release_notes", "source": {"file": "CHANGELOG.md", "start_line": 1, "end_line": 113}}
+  ],
+  "supported_versions": [
+    {"name": "dev.latchway", "version": "1.0.0", "source": {"file": "latchway-core/src/main/kotlin/dev/latchway/core/LatchwayApi.kt", "start_line": 1, "end_line": 10}},
+    {"name": "Android API", "version": "23", "source": {"file": "README.md", "start_line": 27, "end_line": 29}},
+    {"name": "OkHttp minimum", "version": "4.9.2", "source": {"file": "README.md", "start_line": 27, "end_line": 31}},
+    {"name": "OkHttp latest", "version": "5.3.0", "source": {"file": "gradle/libs.versions.toml", "start_line": 1, "end_line": 15}},
+    {"name": "Retrofit minimum", "version": "2.11.0", "source": {"file": "README.md", "start_line": 32, "end_line": 35}},
+    {"name": "Retrofit latest", "version": "3.0.0", "source": {"file": "gradle/libs.versions.toml", "start_line": 1, "end_line": 15}},
+    {"name": "OpenAI Kotlin minimum", "version": "4.0.1", "source": {"file": "README.md", "start_line": 32, "end_line": 35}},
+    {"name": "OpenAI Kotlin latest", "version": "4.1.0", "source": {"file": "gradle/libs.versions.toml", "start_line": 1, "end_line": 15}},
+    {"name": "LangChain4j", "version": "1.19.0", "source": {"file": "gradle/libs.versions.toml", "start_line": 1, "end_line": 15}},
+    {"name": "Koog", "version": "1.1.1", "source": {"file": "gradle/libs.versions.toml", "start_line": 1, "end_line": 15}}
+  ],
+  "public_symbols": [
+    {"glob": "latchway-*/src/main/**/*.kt", "pattern": "(?m)^\\s*public (?:(?:data|sealed|value|fun|open|abstract) )?(?:enum class|class|interface|object|typealias) (?P<name>[A-Za-z][A-Za-z0-9_]*)"},
+    {"glob": "latchway-*/src/main/**/*.kt", "pattern": "(?m)^\\s*public (?:(?:suspend|operator|inline|infix|tailrec) )*fun (?:[A-Za-z][A-Za-z0-9_.<>]*\\.)?(?P<name>[A-Za-z][A-Za-z0-9_]*)"},
+    {"glob": "latchway-*/src/main/**/*.kt", "pattern": "(?m)^\\s*public (?:(?:const|lateinit|override) )*(?:val|var) (?P<name>[A-Za-z][A-Za-z0-9_]*)"},
+    {"glob": "latchway-*/src/main/**/*.kt", "pattern": "(?m)^\\s*public (?P<name>constructor)\\s*\\("}
+  ],
+  "errors": [
+    {"file": "latchway-core/src/main/kotlin/dev/latchway/core/LatchwayApi.kt", "start_line": 80, "end_line": 143, "pattern": "(?m)^\\s*[A-Z][A-Z0-9_]*\\(\\\"(?P<name>[a-z][a-z0-9_]*)\\\"\\)[,;]?$"}
+  ],
+  "examples": [
+    {"name": "Basic Android client", "kind": "quickstart", "source": {"file": "sample-basic/src/main/kotlin/dev/latchway/sample/basic/MainActivity.kt", "start_line": 1, "end_line": 39}},
+    {"name": "Firebase identity provider", "kind": "quickstart", "source": {"file": "sample-firebase/src/main/kotlin/dev/latchway/sample/firebase/MainActivity.kt", "start_line": 1, "end_line": 29}},
+    {"name": "Retrofit conformance consumer", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt", "start_line": 1, "end_line": 288}},
+    {"name": "OpenAI Kotlin conformance consumer", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/OpenAiKotlinFrameworkConformanceTest.kt", "start_line": 1, "end_line": 197}},
+    {"name": "LangChain4j conformance consumer", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/LangChain4jFrameworkConformanceTest.kt", "start_line": 1, "end_line": 215}},
+    {"name": "Koog conformance consumer", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt", "start_line": 1, "end_line": 372}}
+  ]
+}

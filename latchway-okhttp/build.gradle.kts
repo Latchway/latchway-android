@@ -60,6 +60,20 @@ dependencies {
     testImplementation(libs.ktor.client.okhttp) {
         exclude(group = "com.squareup.okhttp3", module = "okhttp")
     }
+    testImplementation(libs.koog.prompt.executor.openai)
+    testImplementation(libs.kotlin.logging)
+    // Koog 1.1.1's JVM OkHttp artifact can otherwise resolve its Android
+    // `utils` variant in an AGP unit-test graph while referencing the JVM
+    // SuitableForIO actual. Pin the matching JVM runtime for this exact spike.
+    testRuntimeOnly(libs.koog.utils.jvm)
+    testImplementation(libs.koog.http.client.okhttp) {
+        exclude(group = "com.squareup.okhttp3", module = "okhttp")
+        exclude(group = "com.squareup.okhttp3", module = "okhttp-bom")
+        exclude(group = "com.squareup.okhttp3", module = "okhttp-sse")
+    }
+    testImplementation("com.squareup.okhttp3:okhttp-sse:$selectedOkHttpVersion") {
+        version { strictly(selectedOkHttpVersion) }
+    }
     testImplementation(
         if (langChain4jCompatibilityVersion == null) libs.langchain4j.open.ai
         else "dev.langchain4j:langchain4j-open-ai:$langChain4jCompatibilityVersion",

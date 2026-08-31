@@ -5,6 +5,7 @@
 
 # Gradle and Android build output
 .gradle/
+.artifacts/
 **/build/
 local.properties
 .externalNativeBuild/
