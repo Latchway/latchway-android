@@ -56,6 +56,26 @@ import java.util.concurrent.atomic.AtomicBoolean
 public val LATCHWAY_OKHTTP_FRAMEWORK_VERSION: String
     get() = OkHttp.VERSION
 
+/** Canonical React Native framework identity emitted by the native-backed fetch bridge. */
+public const val LATCHWAY_REACT_NATIVE_FRAMEWORK_ID: String = "react-native-fetch"
+
+/** React Native package semver supported by this native-backed fetch bridge release. */
+public const val LATCHWAY_REACT_NATIVE_FRAMEWORK_VERSION: String = "0.82.0"
+
+/** Koog release whose public preconfigured-OkHttp seam passed the adapter conformance suite. */
+public const val LATCHWAY_KOOG_FRAMEWORK_VERSION: String = "1.1.1"
+
+/** Closed, audited Android integration identities; arbitrary framework metadata is not accepted. */
+public enum class LatchwayFrameworkIntegration {
+    OKHTTP,
+    KOOG;
+
+    internal fun metadata(): LatchwayFramework = when (this) {
+        OKHTTP -> LatchwayFramework("android-okhttp", LATCHWAY_OKHTTP_FRAMEWORK_VERSION)
+        KOOG -> LatchwayFramework("koog-android", LATCHWAY_KOOG_FRAMEWORK_VERSION)
+    }
+}
+
 public data class LatchwayConfiguration(
     val baseUrl: HttpUrl,
     val applicationId: String,
@@ -66,17 +86,26 @@ public data class LatchwayConfiguration(
     val defaultFeature: String? = null,
     val keyPolicy: KeyPolicy = KeyPolicy(),
     val allowInsecureLoopback: Boolean = false,
+    val frameworkIntegration: LatchwayFrameworkIntegration = LatchwayFrameworkIntegration.OKHTTP,
 ) {
     /** Runtime-derived contract identity; callers cannot report an arbitrary adapter version. */
     val framework: LatchwayFramework
         get() = when (clientPlatform) {
-            LatchwayClientPlatform.ANDROID ->
-                LatchwayFramework("android-okhttp", LATCHWAY_OKHTTP_FRAMEWORK_VERSION)
+            LatchwayClientPlatform.ANDROID -> frameworkIntegration.metadata()
             LatchwayClientPlatform.REACT_NATIVE_ANDROID ->
-                LatchwayFramework("react-native-fetch", sdkVersion)
+                LatchwayFramework(
+                    LATCHWAY_REACT_NATIVE_FRAMEWORK_ID,
+                    LATCHWAY_REACT_NATIVE_FRAMEWORK_VERSION,
+                )
         }
 
     init {
+        require(
+            clientPlatform != LatchwayClientPlatform.REACT_NATIVE_ANDROID ||
+                frameworkIntegration == LatchwayFrameworkIntegration.OKHTTP,
+        ) {
+            "React Native always emits its canonical native-backed fetch framework metadata"
+        }
         CoreConfiguration(
             baseUrl = baseUrl.toUri(),
             applicationId = applicationId,
@@ -712,18 +741,21 @@ internal fun Response.problemCode(): LatchwayErrorCode? = try {
             val rawCode = problem.get("code") as? String
             val requestId = problem.get("request_id") as? String
             val type = problem.get("type") as? String
+            val documentationUrl = problem.get("documentation_url") as? String
             val title = problem.get("title") as? String
             val detail = problem.get("detail") as? String
             val retryable = problem.get("retryable") as? Boolean
             if (problemStatus !is Number || problemStatus.toDouble() != code.toDouble() ||
-                requestId != responseRequestId || rawCode == null ||
-                type != "https://latchway.dev/problems/$rawCode" || title.isNullOrBlank() ||
+                requestId != responseRequestId || rawCode == null || title.isNullOrBlank() ||
                 detail.isNullOrBlank() || retryable == null
             ) {
                 null
             } else {
                 val problemCode = LatchwayErrorCode.fromWire(rawCode).takeIf { it.wireValue == rawCode }
-                when (code) {
+                val canonicalDocumentationUrl = problemCode?.documentationUrl?.toASCIIString()
+                if (type != canonicalDocumentationUrl || documentationUrl != canonicalDocumentationUrl) {
+                    null
+                } else when (code) {
                     401 -> problemCode?.takeIf {
                         (it in AUTHENTICATOR_PROBLEM_CODES && retryable == it.canonicalRetryability()) ||
                             (it in COMPONENT_RESPONSE_TERMINAL_CODES && !retryable)

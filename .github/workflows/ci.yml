@@ -85,3 +85,75 @@ jobs:
           path: build/publication-test-repository
           if-no-files-found: error
           retention-days: 7
+
+  pinned-core-conformance:
+    name: Pinned core Docker and PostgreSQL conformance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: docker.io/library/postgres@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
+        env:
+          POSTGRES_DB: latchway
+          POSTGRES_USER: latchway
+          POSTGRES_PASSWORD: latchway-android-pr-ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U latchway -d latchway"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      LATCHWAY_CONFORMANCE_DATABASE_URL: postgres://latchway:latchway-android-pr-ci@127.0.0.1:5432/latchway?sslmode=disable
+    steps:
+      - name: Check out the Android SDK
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Resolve the exact locked core revision
+        id: core
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit=$(awk '$1 == "core_commit:" {print $2}' contract.lock)
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
+      - name: Check out only the exact locked core revision
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: Latchway/latchway
+          ref: ${{ steps.core.outputs.commit }}
+          path: _core
+          persist-credentials: false
+      - name: Configure Java 17
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Configure Android SDK
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        with:
+          cmdline-tools-version: "14742923" # 20.0
+          packages: ""
+      - name: Install pinned Android platform and build tools
+        run: scripts/install-android-sdk.sh
+      - name: Load the contract bundle and drive the exact core image through the Android SDK
+        env:
+          LATCHWAY_SDK_KIND: android
+          LATCHWAY_CORE_DIR: _core
+          LATCHWAY_EVIDENCE_DIR: ${{ runner.temp }}/latchway-android-pr-core-conformance
+          LATCHWAY_ANDROID_DEVELOP_CONFORMANCE: "1"
+        run: |
+          sh scripts/run-pr-core-conformance.sh \
+            ./gradlew :latchway-okhttp:testDebugUnitTest \
+            --tests 'dev.latchway.okhttp.CoreDevelopLiveConformanceTest' \
+            --rerun-tasks --no-daemon
+      - name: Retain exact-image conformance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: latchway-android-pr-core-conformance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/latchway-android-pr-core-conformance/
+          if-no-files-found: error
+          retention-days: 14

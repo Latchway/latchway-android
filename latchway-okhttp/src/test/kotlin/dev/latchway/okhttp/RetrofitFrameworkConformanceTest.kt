@@ -2,6 +2,7 @@ package dev.latchway.okhttp
 
 import dev.latchway.core.LatchwayErrorCode
 import dev.latchway.core.LatchwayException
+import dev.latchway.core.LatchwayClientPlatform
 import okhttp3.EventListener
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -164,6 +165,50 @@ class RetrofitFrameworkConformanceTest {
             assertEquals(3, server.controlRequestCount)
             assertFrameworkAuthorization(first)
             assertFrameworkAuthorization(second)
+            assertNotEquals(first.headers["DPoP"], second.headers["DPoP"])
+            assertNotEquals(first.headers["Authorization"], second.headers["Authorization"])
+        } finally {
+            close(http, harness, server)
+        }
+    }
+
+    @Test
+    fun reactNativeTransportAutomaticallyRefreshesExpiredSessionBeforeReplay() {
+        val server = LoopbackHttpServer()
+        server.enqueue(
+            LoopbackResponse().setLatchwayProblem(
+                code = "session_expired",
+                status = 401,
+                retryable = true,
+            ),
+        )
+        server.enqueue(
+            LoopbackResponse()
+                .setResponseCode(200)
+                .addHeader("Content-Type", "application/json")
+                .setBody("{\"id\":\"resp_after_refresh\",\"status\":\"completed\"}"),
+        )
+        server.start()
+        val harness = FrameworkConformanceHarness(
+            server,
+            includeRefreshGrant = true,
+            clientPlatform = LatchwayClientPlatform.REACT_NATIVE_ANDROID,
+        )
+        val http = harness.okHttpBuilder().build()
+
+        try {
+            val response = retrofit(server, http).response(
+                authorization = "Bearer $PROVIDER_PLACEHOLDER",
+                body = "{}".toRequestBody(JSON),
+            ).execute()
+            val first = server.takeDataRequest()
+            val second = server.takeDataRequest()
+
+            assertTrue(response.isSuccessful)
+            assertEquals(2, server.dataRequestCount)
+            assertEquals(3, server.controlRequestCount)
+            assertReactNativeFrameworkAuthorization(first)
+            assertReactNativeFrameworkAuthorization(second)
             assertNotEquals(first.headers["DPoP"], second.headers["DPoP"])
             assertNotEquals(first.headers["Authorization"], second.headers["Authorization"])
         } finally {

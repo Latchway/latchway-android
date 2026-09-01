@@ -491,8 +491,10 @@ internal class LoopbackResponse {
     internal fun renderBody(requestId: String?): ByteArray {
         val problem = latchwayProblem ?: return body
         val correlated = requireNotNull(requestId) { "A Latchway problem requires a request ID" }
+        val documentationUrl = "https://docs.latchway.dev/errors/${problem.code.replace('_', '-')}"
         return org.json.JSONObject()
-            .put("type", "https://latchway.dev/problems/${problem.code}")
+            .put("type", documentationUrl)
+            .put("documentation_url", documentationUrl)
             .put("title", "Request rejected")
             .put("status", problem.status)
             .put("detail", "The request was rejected before upstream dispatch")

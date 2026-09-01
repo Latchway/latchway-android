@@ -54,7 +54,8 @@ public data class CoreConfiguration(
             require(SEMVER.matches(it.version)) { "framework.version must be semantic version syntax" }
             require(
                 when (clientPlatform) {
-                    LatchwayClientPlatform.ANDROID -> it.id == "android-okhttp"
+                    LatchwayClientPlatform.ANDROID ->
+                        it.id == "android-okhttp" || it.id == "koog-android"
                     LatchwayClientPlatform.REACT_NATIVE_ANDROID -> it.id == "react-native-fetch"
                 },
             ) { "framework is not compatible with the selected Android SDK platform" }
@@ -144,7 +145,7 @@ public enum class LatchwayErrorCode(public val wireValue: String) {
 
     /** Stable public remediation documentation for this error code. */
     public val documentationUrl: URI
-        get() = URI.create("https://docs.latchway.dev/errors/$wireValue")
+        get() = URI.create("https://docs.latchway.dev/errors/${wireValue.replace('_', '-')}")
 
     public companion object {
         public fun fromWire(value: String?): LatchwayErrorCode =

@@ -49,7 +49,10 @@ class KoogFrameworkConformanceTest {
                 .setBody(CHAT_COMPLETION),
         )
         server.start()
-        val harness = FrameworkConformanceHarness(server)
+        val harness = FrameworkConformanceHarness(
+            server,
+            frameworkIntegration = LatchwayFrameworkIntegration.KOOG,
+        )
         val fixture = koog(server, harness)
         val schema = buildJsonObject {
             put("type", "object")
@@ -77,7 +80,7 @@ class KoogFrameworkConformanceTest {
 
             assertEquals("fixture accepted", answer.textContent())
             assertEquals("POST /v1/chat/completions HTTP/1.1", recorded.requestLine)
-            assertFrameworkAuthorization(recorded)
+            assertFrameworkAuthorization(recorded, LatchwayFrameworkIntegration.KOOG)
             assertEquals("fixture_lookup", body.getJSONArray("tools").getJSONObject(0)
                 .getJSONObject("function").getString("name"))
             assertTrue(body.getJSONObject("response_format").toString().contains("structured-output"))
@@ -102,7 +105,10 @@ class KoogFrameworkConformanceTest {
                 ),
         )
         server.start()
-        val harness = FrameworkConformanceHarness(server)
+        val harness = FrameworkConformanceHarness(
+            server,
+            frameworkIntegration = LatchwayFrameworkIntegration.KOOG,
+        )
         val fixture = koog(server, harness)
 
         try {
@@ -121,7 +127,10 @@ class KoogFrameworkConformanceTest {
             assertEquals("first", frames.filterIsInstance<StreamFrame.TextDelta>().joinToString("") { it.text })
             val end = frames.filterIsInstance<StreamFrame.End>().single()
             assertEquals(5, end.metaInfo.totalTokensCount)
-            assertFrameworkAuthorization(server.takeDataRequest())
+            assertFrameworkAuthorization(
+                server.takeDataRequest(),
+                LatchwayFrameworkIntegration.KOOG,
+            )
         } finally {
             close(fixture, harness, server)
         }
@@ -148,7 +157,10 @@ class KoogFrameworkConformanceTest {
                 canceled.countDown()
             }
         }
-        val harness = FrameworkConformanceHarness(server)
+        val harness = FrameworkConformanceHarness(
+            server,
+            frameworkIntegration = LatchwayFrameworkIntegration.KOOG,
+        )
         val fixture = koog(server, harness, eventListener = listener)
 
         try {
@@ -163,7 +175,10 @@ class KoogFrameworkConformanceTest {
             collecting.cancelAndJoin()
 
             assertTrue("cancelling Koog's Flow must cancel its OkHttp EventSource", canceled.await(2, TimeUnit.SECONDS))
-            assertFrameworkAuthorization(server.takeDataRequest())
+            assertFrameworkAuthorization(
+                server.takeDataRequest(),
+                LatchwayFrameworkIntegration.KOOG,
+            )
         } finally {
             close(fixture, harness, server)
         }
@@ -180,7 +195,10 @@ class KoogFrameworkConformanceTest {
                 .setBodyDelay(2, TimeUnit.SECONDS),
         )
         server.start()
-        val harness = FrameworkConformanceHarness(server)
+        val harness = FrameworkConformanceHarness(
+            server,
+            frameworkIntegration = LatchwayFrameworkIntegration.KOOG,
+        )
         val fixture = koog(server, harness, callTimeoutMillis = 250)
 
         try {
@@ -192,7 +210,7 @@ class KoogFrameworkConformanceTest {
             val recorded = server.takeDataRequest()
 
             assertTrue("Koog must preserve the configured OkHttp timeout", elapsed < 1_500)
-            assertFrameworkAuthorization(recorded)
+            assertFrameworkAuthorization(recorded, LatchwayFrameworkIntegration.KOOG)
             assertSafeError(error, recorded)
         } finally {
             close(fixture, harness, server)
@@ -215,7 +233,10 @@ class KoogFrameworkConformanceTest {
                 .setBody(CHAT_COMPLETION),
         )
         server.start()
-        val harness = FrameworkConformanceHarness(server)
+        val harness = FrameworkConformanceHarness(
+            server,
+            frameworkIntegration = LatchwayFrameworkIntegration.KOOG,
+        )
         val fixture = koog(server, harness)
         val retrying = RetryingLLMClient(
             fixture.client,
@@ -236,10 +257,51 @@ class KoogFrameworkConformanceTest {
 
             assertEquals("fixture accepted", answer.textContent())
             assertEquals(2, server.dataRequestCount)
-            assertFrameworkAuthorization(first)
-            assertFrameworkAuthorization(second)
+            assertFrameworkAuthorization(first, LatchwayFrameworkIntegration.KOOG)
+            assertFrameworkAuthorization(second, LatchwayFrameworkIntegration.KOOG)
             assertNotEquals(first.headers["DPoP"], second.headers["DPoP"])
             assertNotEquals(first.headers["X-Latchway-Request-ID"], second.headers["X-Latchway-Request-ID"])
+        } finally {
+            close(fixture, harness, server)
+        }
+    }
+
+    @Test
+    fun koogReplayableRequestUsesOnlyTheCorrelatedPreDispatchRefresh() = runBlocking {
+        val server = LoopbackHttpServer()
+        server.enqueue(
+            LoopbackResponse().setLatchwayProblem(
+                code = "session_expired",
+                status = 401,
+                retryable = true,
+            ),
+        )
+        server.enqueue(
+            LoopbackResponse()
+                .setResponseCode(200)
+                .addHeader("Content-Type", "application/json")
+                .setBody(CHAT_COMPLETION),
+        )
+        server.start()
+        val harness = FrameworkConformanceHarness(
+            server,
+            includeRefreshGrant = true,
+            frameworkIntegration = LatchwayFrameworkIntegration.KOOG,
+        )
+        val fixture = koog(server, harness)
+
+        try {
+            val answer = fixture.client.execute(prompt(), OpenAIModels.Chat.GPT4o, emptyList())
+            val first = server.takeDataRequest()
+            val second = server.takeDataRequest()
+
+            assertEquals("fixture accepted", answer.textContent())
+            assertEquals(2, server.dataRequestCount)
+            assertEquals(3, server.controlRequestCount)
+            assertFrameworkAuthorization(first, LatchwayFrameworkIntegration.KOOG)
+            assertFrameworkAuthorization(second, LatchwayFrameworkIntegration.KOOG)
+            assertNotEquals(first.headers["DPoP"], second.headers["DPoP"])
+            assertNotEquals(first.headers["Authorization"], second.headers["Authorization"])
         } finally {
             close(fixture, harness, server)
         }
@@ -256,7 +318,10 @@ class KoogFrameworkConformanceTest {
             ),
         )
         server.start()
-        val harness = FrameworkConformanceHarness(server)
+        val harness = FrameworkConformanceHarness(
+            server,
+            frameworkIntegration = LatchwayFrameworkIntegration.KOOG,
+        )
         val fixture = koog(server, harness)
 
         try {
@@ -267,7 +332,7 @@ class KoogFrameworkConformanceTest {
             val requestId = checkNotNull(recorded.headers["X-Latchway-Request-ID"])
 
             assertEquals(1, server.dataRequestCount)
-            assertFrameworkAuthorization(recorded)
+            assertFrameworkAuthorization(recorded, LatchwayFrameworkIntegration.KOOG)
             assertTrue(error.toString().contains(requestId))
             assertTrue(error.toString().contains("quota_exceeded"))
             assertSafeError(error, recorded)

@@ -25,7 +25,9 @@ val retrofitCompatibilityVersion = providers.gradleProperty("latchway.retrofit.v
 val openAiKotlinCompatibilityVersion = providers.gradleProperty("latchway.openaiKotlin.version").orNull
 val langChain4jCompatibilityVersion = providers.gradleProperty("latchway.langchain4j.version").orNull
 val langChain4jOkHttpCompatibilityVersion = providers.gradleProperty("latchway.langchain4jOkHttp.version").orNull
+val koogCompatibilityVersion = providers.gradleProperty("latchway.koog.version").orNull
 val selectedOkHttpVersion = okhttpCompatibilityVersion ?: libs.versions.okhttp.get()
+val selectedKoogVersion = koogCompatibilityVersion ?: libs.versions.koog.get()
 
 dependencies {
     api(project(":latchway-core"))
@@ -60,13 +62,18 @@ dependencies {
     testImplementation(libs.ktor.client.okhttp) {
         exclude(group = "com.squareup.okhttp3", module = "okhttp")
     }
-    testImplementation(libs.koog.prompt.executor.openai)
+    testImplementation("ai.koog:prompt-executor-openai-client:$selectedKoogVersion") {
+        version { strictly(selectedKoogVersion) }
+    }
     testImplementation(libs.kotlin.logging)
     // Koog 1.1.1's JVM OkHttp artifact can otherwise resolve its Android
     // `utils` variant in an AGP unit-test graph while referencing the JVM
     // SuitableForIO actual. Pin the matching JVM runtime for this exact spike.
-    testRuntimeOnly(libs.koog.utils.jvm)
-    testImplementation(libs.koog.http.client.okhttp) {
+    testRuntimeOnly("ai.koog:utils-jvm:$selectedKoogVersion") {
+        version { strictly(selectedKoogVersion) }
+    }
+    testImplementation("ai.koog:http-client-okhttp:$selectedKoogVersion") {
+        version { strictly(selectedKoogVersion) }
         exclude(group = "com.squareup.okhttp3", module = "okhttp")
         exclude(group = "com.squareup.okhttp3", module = "okhttp-bom")
         exclude(group = "com.squareup.okhttp3", module = "okhttp-sse")

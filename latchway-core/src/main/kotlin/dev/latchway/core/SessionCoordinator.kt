@@ -740,7 +740,9 @@ internal fun problem(response: LatchwayTransportResponse): LatchwayException {
         val rawCode = boundedString(json, "code", 1, 128)
         val code = LatchwayErrorCode.fromWire(rawCode)
         require(code.wireValue == rawCode)
-        require(boundedString(json, "type", 1, 2_048) == "https://latchway.dev/problems/$rawCode")
+        val documentationUrl = code.documentationUrl.toASCIIString()
+        require(boundedString(json, "type", 1, 2_048) == documentationUrl)
+        require(boundedString(json, "documentation_url", 1, 2_048) == documentationUrl)
         require(boundedString(json, "title", 1, 256).isNotBlank())
         val detail = boundedString(json, "detail", 1, 2_048).also { require(it.isNotBlank()) }
         val requestId = boundedString(json, "request_id", 8, 128).also {

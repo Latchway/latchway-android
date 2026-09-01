@@ -3,6 +3,7 @@ package dev.latchway.okhttp
 import dev.latchway.core.CoreConfiguration
 import dev.latchway.core.InstallationMetadata
 import dev.latchway.core.LatchwayClock
+import dev.latchway.core.LatchwayClientPlatform
 import dev.latchway.core.LatchwayCoreClient
 import dev.latchway.testsupport.DebugAttestationProvider
 import dev.latchway.testsupport.InMemorySessionStateStore
@@ -25,6 +26,8 @@ internal val FRAMEWORK_ACCESS_TOKEN = "a".repeat(64)
 internal class FrameworkConformanceHarness(
     private val gateway: LoopbackHttpServer,
     includeRefreshGrant: Boolean = false,
+    frameworkIntegration: LatchwayFrameworkIntegration = LatchwayFrameworkIntegration.OKHTTP,
+    private val clientPlatform: LatchwayClientPlatform = LatchwayClientPlatform.ANDROID,
 ) : Closeable {
     private val now = 1_700_000_000L
     private val signer = SoftwareTestInstallationSigner.generate()
@@ -36,6 +39,8 @@ internal class FrameworkConformanceHarness(
         identityProvider = "debug",
         defaultFeature = FRAMEWORK_FEATURE,
         allowInsecureLoopback = true,
+        frameworkIntegration = frameworkIntegration,
+        clientPlatform = clientPlatform,
     )
     private val core = LatchwayCoreClient.create(
         configuration = CoreConfiguration(
@@ -119,7 +124,7 @@ internal class FrameworkConformanceHarness(
           "refresh_expires_in":3600,
           "installation":{
             "id":"ins_01J00000000000000000000001",
-            "platform":"android",
+            "platform":"${clientPlatform.wireValue}",
             "dpop_jkt":"${signer.publicJwk.thumbprint()}",
             "status":"active"
           },
@@ -133,7 +138,10 @@ internal class FrameworkConformanceHarness(
     """.trimIndent()
 }
 
-internal fun assertFrameworkAuthorization(request: LoopbackRecordedRequest) {
+internal fun assertFrameworkAuthorization(
+    request: LoopbackRecordedRequest,
+    integration: LatchwayFrameworkIntegration = LatchwayFrameworkIntegration.OKHTTP,
+) {
     val authorization = request.headers["Authorization"]
     assertNotNull(authorization)
     assertTrue(authorization!!.startsWith("DPoP "))
@@ -142,12 +150,27 @@ internal fun assertFrameworkAuthorization(request: LoopbackRecordedRequest) {
     assertEquals("android", request.headers["X-Latchway-SDK"])
     assertEquals("1.0.0", request.headers["X-Latchway-SDK-Version"])
     assertEquals("2", request.headers["X-Latchway-Protocol-Version"])
-    assertEquals("android-okhttp", request.headers["X-Latchway-Framework"])
-    assertEquals(OkHttp.VERSION, request.headers["X-Latchway-Framework-Version"])
+    val framework = integration.metadata()
+    assertEquals(framework.id, request.headers["X-Latchway-Framework"])
+    assertEquals(framework.version, request.headers["X-Latchway-Framework-Version"])
     assertNotNull(request.headers["X-Latchway-Request-ID"])
     val proof = request.headers["DPoP"]
     assertNotNull(proof)
     assertEquals(2, proof!!.count { it == '.' })
+    assertEquals(null, request.headers["Api-Key"])
+    assertEquals(null, request.headers["X-Api-Key"])
+}
+
+internal fun assertReactNativeFrameworkAuthorization(request: LoopbackRecordedRequest) {
+    val authorization = request.headers["Authorization"]
+    assertNotNull(authorization)
+    assertTrue(authorization!!.startsWith("DPoP "))
+    assertFalse(authorization.contains(PROVIDER_PLACEHOLDER))
+    assertEquals(FRAMEWORK_FEATURE, request.headers["X-Latchway-Feature"])
+    assertEquals("react-native", request.headers["X-Latchway-SDK"])
+    assertEquals("react-native-fetch", request.headers["X-Latchway-Framework"])
+    assertEquals("0.82.0", request.headers["X-Latchway-Framework-Version"])
+    assertNotNull(request.headers["DPoP"])
     assertEquals(null, request.headers["Api-Key"])
     assertEquals(null, request.headers["X-Api-Key"])
 }

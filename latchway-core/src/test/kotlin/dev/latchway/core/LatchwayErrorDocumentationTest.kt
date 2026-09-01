@@ -8,7 +8,7 @@ public class LatchwayErrorDocumentationTest {
     public fun everyPublicErrorCodeHasOneStableDocumentationPath(): Unit {
         LatchwayErrorCode.entries.forEach { code ->
             assertEquals(
-                "https://docs.latchway.dev/errors/${code.wireValue}",
+                "https://docs.latchway.dev/errors/${code.wireValue.replace('_', '-')}",
                 code.documentationUrl.toASCIIString(),
             )
         }
@@ -23,7 +23,7 @@ public class LatchwayErrorDocumentationTest {
         )
 
         assertEquals(
-            "https://docs.latchway.dev/errors/quota_exceeded",
+            "https://docs.latchway.dev/errors/quota-exceeded",
             exception.documentationUrl.toASCIIString(),
         )
         assertEquals("request-12345678", exception.requestId)

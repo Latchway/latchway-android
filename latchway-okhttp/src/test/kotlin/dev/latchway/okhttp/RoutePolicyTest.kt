@@ -1,6 +1,8 @@
 package dev.latchway.okhttp
 
 import dev.latchway.core.LatchwayClientPlatform
+import kotlinx.coroutines.runBlocking
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttp
 import okhttp3.Request
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -71,15 +73,73 @@ class RoutePolicyTest {
         assertEquals("android-okhttp", android.framework.id)
         assertEquals(OkHttp.VERSION, android.framework.version)
 
+        val koog = android.copy(frameworkIntegration = LatchwayFrameworkIntegration.KOOG)
+        assertEquals("koog-android", koog.framework.id)
+        assertEquals(LATCHWAY_KOOG_FRAMEWORK_VERSION, koog.framework.version)
+        assertEquals("1.1.1", koog.framework.version)
+
         val reactNative = android.copy(
             clientPlatform = LatchwayClientPlatform.REACT_NATIVE_ANDROID,
             sdkVersion = "1.2.3",
         )
-        assertEquals("react-native-fetch", reactNative.framework.id)
-        assertEquals("1.2.3", reactNative.framework.version)
+        assertEquals(LATCHWAY_REACT_NATIVE_FRAMEWORK_ID, reactNative.framework.id)
+        assertEquals(LATCHWAY_REACT_NATIVE_FRAMEWORK_VERSION, reactNative.framework.version)
+        assertEquals("0.82.0", reactNative.framework.version)
+        assertThrows(IllegalArgumentException::class.java) {
+            reactNative.copy(frameworkIntegration = LatchwayFrameworkIntegration.KOOG)
+        }
 
         val androidWithDifferentSdkVersion = android.copy(sdkVersion = "9.8.7")
         assertEquals(OkHttp.VERSION, androidWithDifferentSdkVersion.framework.version)
+
+        val reactNativeWithDifferentSdkVersion = reactNative.copy(sdkVersion = "9.8.7")
+        assertEquals(LATCHWAY_REACT_NATIVE_FRAMEWORK_VERSION, reactNativeWithDifferentSdkVersion.framework.version)
+    }
+
+    @Test
+    fun defaultOkHttpIntegrationPreservesEveryRegisteredAiRouteAndStructuredBody() = runBlocking {
+        val server = LoopbackHttpServer()
+        repeat(3) {
+            server.enqueue(
+                LoopbackResponse()
+                    .setResponseCode(200)
+                    .addHeader("Content-Type", "application/json")
+                    .setBody("{\"accepted\":true}"),
+            )
+        }
+        server.start()
+        val harness = FrameworkConformanceHarness(server)
+        val client = harness.okHttpBuilder().build()
+        val json = "application/json".toMediaType()
+        val requests = listOf(
+            "/v1/responses" to "{\"input\":\"hello\"}",
+            "/v1/chat/completions" to "{\"messages\":[],\"tools\":[{\"type\":\"function\"}],\"response_format\":{\"type\":\"json_schema\"}}",
+            "/v1/embeddings" to "{\"input\":\"hello\"}",
+        )
+
+        try {
+            for ((path, body) in requests) {
+                val request = Request.Builder()
+                    .url(server.url(path))
+                    .post(body.toRequestBody(json))
+                    .latchwayFeature(FRAMEWORK_FEATURE)
+                    .build()
+                client.newCall(request).execute().use { response ->
+                    assertTrue(response.isSuccessful)
+                    assertEquals("{\"accepted\":true}", checkNotNull(response.body).string())
+                }
+                val recorded = server.takeDataRequest()
+                assertEquals("POST $path HTTP/1.1", recorded.requestLine)
+                assertEquals(body, recorded.body.readUtf8())
+                assertFrameworkAuthorization(recorded)
+            }
+        } finally {
+            client.dispatcher.cancelAll()
+            client.connectionPool.evictAll()
+            client.dispatcher.executorService.shutdown()
+            harness.close()
+            server.shutdown()
+        }
     }
 
     @Test

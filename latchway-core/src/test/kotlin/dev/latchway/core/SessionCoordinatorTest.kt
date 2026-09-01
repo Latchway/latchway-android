@@ -354,12 +354,20 @@ class SessionCoordinatorTest {
         val malformed = JSONObject(problem("installation_revoked")).apply {
             remove("request_id")
         }.toString()
+        val mismatchedType = JSONObject(problem("installation_revoked")).apply {
+            put("type", "https://malicious.invalid/installation-revoked")
+        }.toString()
+        val mismatchedDocumentationUrl = JSONObject(problem("installation_revoked")).apply {
+            put("documentation_url", "https://malicious.invalid/installation-revoked")
+        }.toString()
         val cases = listOf(
             problem("installation_revoked") to mapOf(
                 "Content-Type" to listOf("application/json"),
                 "X-Latchway-Request-ID" to listOf("req_12345678"),
             ),
             malformed to canonicalProblemHeaders(),
+            mismatchedType to canonicalProblemHeaders(),
+            mismatchedDocumentationUrl to canonicalProblemHeaders(),
             problem("installation_revoked") to mapOf(
                 "Content-Type" to listOf("application/problem+json"),
                 "X-Latchway-Request-ID" to listOf("req_different"),
@@ -1520,16 +1528,20 @@ class SessionCoordinatorTest {
         status: Int = if (code == "installation_revoked") 403 else 401,
         operationId: String? = null,
         retryable: Boolean = code == "operation_indeterminate",
-    ): String = JSONObject()
-        .put("type", "https://latchway.dev/problems/$code")
-        .put("title", "Request rejected")
-        .put("status", status)
-        .put("detail", "The request was rejected")
-        .put("code", code)
-        .put("request_id", "req_12345678")
-        .put("retryable", retryable)
-        .apply { operationId?.let { put("operation_id", it) } }
-        .toString()
+    ): String {
+        val documentationUrl = "https://docs.latchway.dev/errors/${code.replace('_', '-')}"
+        return JSONObject()
+            .put("type", documentationUrl)
+            .put("documentation_url", documentationUrl)
+            .put("title", "Request rejected")
+            .put("status", status)
+            .put("detail", "The request was rejected")
+            .put("code", code)
+            .put("request_id", "req_12345678")
+            .put("retryable", retryable)
+            .apply { operationId?.let { put("operation_id", it) } }
+            .toString()
+    }
 
     private fun response(
         status: Int,

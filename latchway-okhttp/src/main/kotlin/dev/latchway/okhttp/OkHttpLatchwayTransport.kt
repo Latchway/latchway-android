@@ -73,7 +73,10 @@ public class OkHttpLatchwayTransport(
 
     private companion object {
         const val MAX_RESPONSE_BYTES = 512 * 1024
-        val JSON = "application/json; charset=utf-8".toMediaType()
+        // The client protocol requires the exact JSON media type. Supplying a
+        // charset here makes OkHttp replace the canonical control header with
+        // `application/json; charset=utf-8`, which the gateway rejects.
+        val JSON = "application/json".toMediaType()
 
         fun readBounded(input: java.io.InputStream): ByteArray {
             val output = ByteArrayOutputStream()

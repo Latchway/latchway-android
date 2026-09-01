@@ -128,6 +128,24 @@ class AuthenticatorPolicyTest {
     }
 
     @Test
+    fun problemClassificationRequiresBothCanonicalDocumentationUrls() {
+        assertEquals(
+            null,
+            response(
+                "session_expired",
+                typeUrl = "https://malicious.invalid/session-expired",
+            ).problemCode(),
+        )
+        assertEquals(
+            null,
+            response(
+                "session_expired",
+                documentationUrl = "https://malicious.invalid/session-expired",
+            ).problemCode(),
+        )
+    }
+
+    @Test
     fun interceptorObservationTerminalizesOnlyCanonical403InstallationRevocation() {
         var revocations = 0
         val revoked = response("installation_revoked")
@@ -227,6 +245,8 @@ class AuthenticatorPolicyTest {
         httpStatus: Int = if (code == "installation_revoked") 403 else 401,
         problemStatus: Int = httpStatus,
         url: String = "https://gateway.example.test/v1/responses",
+        typeUrl: String = "https://docs.latchway.dev/errors/${code.replace('_', '-')}",
+        documentationUrl: String = "https://docs.latchway.dev/errors/${code.replace('_', '-')}",
     ): Response {
         val request = Request.Builder()
             .url(url)
@@ -240,7 +260,7 @@ class AuthenticatorPolicyTest {
             .apply { nonce?.let { header("DPoP-Nonce", it) } }
             .apply { requestIdHeader?.let { header("X-Latchway-Request-ID", it) } }
             .body(
-                """{"type":"https://latchway.dev/problems/$code","title":"Request rejected","status":$problemStatus,"code":"$code","request_id":"req_12345678","detail":"Request rejected","retryable":${code == "dpop_nonce_required" || code == "session_expired"}}"""
+                """{"type":"$typeUrl","documentation_url":"$documentationUrl","title":"Request rejected","status":$problemStatus,"code":"$code","request_id":"req_12345678","detail":"Request rejected","retryable":${code == "dpop_nonce_required" || code == "session_expired"}}"""
                     .toResponseBody(mediaType.toMediaType()),
             )
             .build()

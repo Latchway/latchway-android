@@ -91,9 +91,10 @@ safe deployment coordinates with the documented `latchway.gatewayUrl`,
 `latchway.model`, and `latchway.cloudProjectNumber` Gradle properties.
 
 Every `LatchwayErrorCode` and `LatchwayException` exposes `documentationUrl`,
-which resolves to `https://docs.latchway.dev/errors/<code>`. Applications can
-show that stable remediation link alongside the redacted request ID without
-rendering server detail.
+which resolves to `https://docs.latchway.dev/errors/<hyphenated-code>`.
+Server Problems are trusted only when both `type` and `documentation_url`
+match that canonical URL exactly. Applications can show the stable remediation
+link alongside the redacted request ID without rendering server detail.
 
 The OkHttp adapter declares the tested `android-okhttp` framework and exact
 OkHttp version as a header pair. It authorizes only the contract-owned data

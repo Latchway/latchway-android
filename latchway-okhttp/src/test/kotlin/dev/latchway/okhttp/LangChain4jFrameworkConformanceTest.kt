@@ -127,7 +127,8 @@ class LangChain4jFrameworkConformanceTest {
                 .addHeader("Content-Type", "application/problem+json")
                 .setBody(
                     """
-                    {"type":"https://latchway.dev/problems/quota_exceeded",
+                    {"type":"https://docs.latchway.dev/errors/quota-exceeded",
+                     "documentation_url":"https://docs.latchway.dev/errors/quota-exceeded",
                      "title":"Quota exceeded","status":429,
                      "detail":"The feature quota is exhausted","code":"quota_exceeded",
                      "request_id":"req_langchain_quota","retryable":false}

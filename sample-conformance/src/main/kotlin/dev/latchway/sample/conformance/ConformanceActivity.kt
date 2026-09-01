@@ -599,10 +599,14 @@ private suspend fun Call.awaitBounded(maximumBytes: Long): SafeResponse =
                             null
                         }
                         val code = problem?.optString("code")?.takeIf { SAFE_CODE.matches(it) }
+                        val documentationUrl = code?.let {
+                            "https://docs.latchway.dev/errors/${it.replace('_', '-')}"
+                        }
                         val validProblem = problem != null &&
                             problem.optInt("status", -1) == bounded.code &&
                             problem.optString("request_id") == requestId &&
-                            problem.optString("type") == "https://latchway.dev/problems/$code" &&
+                            problem.optString("type") == documentationUrl &&
+                            problem.optString("documentation_url") == documentationUrl &&
                             problem.optString("title").isNotBlank() &&
                             problem.optString("detail").isNotBlank() &&
                             problem.has("retryable")
