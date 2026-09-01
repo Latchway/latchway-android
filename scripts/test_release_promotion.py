@@ -397,6 +397,21 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertNotIn('--header "Authorization: Bearer $CORE_READ_TOKEN"', workflow)
         self.assertIn("sha256sum --check --strict", workflow)
         self.assertIn(
+            "report_artifact_name: ${{ steps.coordinates.outputs.report_artifact_name }}",
+            workflow,
+        )
+        self.assertIn(
+            "name: ${{ steps.coordinates.outputs.report_artifact_name }}", workflow
+        )
+        self.assertIn(
+            "name: ${{ needs.authorize-promotion.outputs.report_artifact_name }}",
+            workflow,
+        )
+        self.assertNotIn(
+            "name: sdk-core-promotion-${{ github.run_id }}-${{ github.run_attempt }}",
+            workflow,
+        )
+        self.assertIn(
             "--signer-workflow Latchway/latchway/.github/workflows/"
             "cross-repository-conformance.yml",
             workflow,
