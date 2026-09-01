@@ -3,7 +3,7 @@
 ## Status
 
 This document describes the intended `1.0.0` source candidate locked
-to draft contract `1.0.0` and current wire protocol `2`. The gateway retains
+to released contract `1.0.0` and current wire protocol `2`. The gateway retains
 wire protocol `1` only for legacy clients; this SDK emits protocol `2`, including
 for Installation Family and Client Component operations. Public APIs remain handwritten; the
 internal JSON boundary is validated directly against the core schemas and

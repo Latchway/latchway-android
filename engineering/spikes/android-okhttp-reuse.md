@@ -162,7 +162,11 @@ protected ephemeral collector/supervisor, and an accepted signed evidence
 artifact. The current root-component workflow does not prove a delegated Wear,
 companion-package, automotive, or isolated-process component. No fixture,
 emulator, sideloaded APK, connected-device state, or local test result may be
-used to close either physical gate.
+used to close the mandatory root physical gate or make a separate delegated
+physical-conformance claim. Delegated physical conformance is outside the
+root-only v1 Android release scope and does not block that release.
 
-Until those hosted and physical artifacts exist, keep the cross-repository
-compatibility/release locks at their truthful pre-release state.
+Until the mandatory root evidence exists, keep Android package publication and
+evidence-dependent compatibility claims at their truthful pre-release or
+unverified state. The released core contract lock remains pinned to its exact
+checkpoint and reproducible bundle independently of that external evidence.

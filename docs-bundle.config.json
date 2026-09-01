@@ -11,7 +11,7 @@
     {"path": "frameworks/openai-kotlin.kt", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/OpenAiKotlinFrameworkConformanceTest.kt", "start_line": 28, "end_line": 56}},
     {"path": "frameworks/langchain4j.kt", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/LangChain4jFrameworkConformanceTest.kt", "start_line": 21, "end_line": 56}},
     {"path": "frameworks/koog.kt", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt", "start_line": 42, "end_line": 91}},
-    {"path": "release-notes.md", "kind": "release_notes", "source": {"file": "CHANGELOG.md", "start_line": 1, "end_line": 113}}
+    {"path": "release-notes.md", "kind": "release_notes", "source": {"file": "CHANGELOG.md", "start_line": 1, "end_line": 115}}
   ],
   "supported_versions": [
     {"name": "dev.latchway:latchway-core", "version": "1.0.0", "source": {"file": "docs/publishing.md", "start_line": 3, "end_line": 36}},

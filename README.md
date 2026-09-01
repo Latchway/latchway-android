@@ -291,7 +291,7 @@ registry, protocol manifest, canonical attestation binding, DPoP vectors, and
 compatibility rules. This SDK consumes a signed and checksummed contract bundle;
 it does not define an independent wire protocol.
 
-[`contract.lock`](contract.lock) pins draft contract `1.0.0`, current wire
+[`contract.lock`](contract.lock) pins released contract `1.0.0`, current wire
 protocol `2`, the
 exact core checkpoint and bundle checksum, and server compatibility from
 `1.0.0` through the tested `1.0.x` series. The authoritative protocol manifest,

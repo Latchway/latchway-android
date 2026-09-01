@@ -7,6 +7,8 @@ Versioning once package publication begins.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-01
+
 ### Added
 
 - A run-bound, terminal one-use identity-JWT bootstrap for the Play-distributed
@@ -27,7 +29,7 @@ Versioning once package publication begins.
 ### Changed
 
 - Synchronized runtime constants, canonical fixtures, Installation Family and
-  Client Component operations, and framework metadata with draft core contract
+  Client Component operations, and framework metadata with released core contract
   `1.0.0` at current wire protocol `2`. The gateway's wire protocol `1`
   compatibility remains a legacy server behavior and is not emitted by this
   SDK candidate.
@@ -56,11 +58,11 @@ Versioning once package publication begins.
   rejects same-origin requests outside the allowed Latchway data-plane paths,
   including encoded opaque-path traversal.
 
-## Planned 1.0.0 candidate baseline (unreleased)
+### Initial candidate baseline
 
-### Changed
+#### Changed
 
-- Established the initial unpublished SDK candidate baseline; compatibility is declared for server `1.0.0`
+- Established the initial SDK baseline; compatibility is declared for server `1.0.0`
   through the tested `1.0.x` series. The server-owned trusted input-accounting contract
   adds no client wire fields, and indeterminate-operation errors preserve their
   required operation ID.
@@ -83,7 +85,7 @@ Versioning once package publication begins.
 - Play Integrity challenges require a canonical server cloud project number
   that exactly matches the configured project before a token is requested.
 
-### Added
+#### Added
 
 - Initial governance, contribution, security, and architecture documentation.
 - Gradle 9.5/AGP 9.3 multi-module project for API 23 and newer.
@@ -106,7 +108,7 @@ Versioning once package publication begins.
   consumer that resolves all public artifacts through the BOM, plus CI coverage
   that retains the verified repository as a test artifact.
 
-### Security
+#### Security
 
 - Remote publication is absent unless explicitly enabled, Central secrets are
   read from environment or user-home properties only, and signing is rejected

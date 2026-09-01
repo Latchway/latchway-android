@@ -58,19 +58,22 @@ Latchway access/refresh tokens, DPoP JWTs, integrity tokens, private keys,
 provider credentials, prompts, and response bodies. The validator rejects
 unknown fields and secret-shaped values.
 
-## Installation Family addendum scope
+## Installation Family follow-up scope
 
-The current protected observation proves the directly attested Android root
-component. It does not yet prove a delegated Wear, companion-package,
-automotive, or isolated-process component on physical hardware. Such a claim
-requires a reviewed server Component Definition and an expanded signed evidence
-schema that records only safe hashes/status for: distinct root/child public-key
-thumbprints, child provisioning, independent refresh rotation, child-only
-revocation with a still-live root, and family-wide revocation. Until that
-protected workflow and a real Play-distributed run exist, the generic component
-runtime is locally tested but delegated Android physical-device conformance and
-release promotion remain blocked. Do not reuse fixture, emulator, sideloaded,
-or root-only evidence to satisfy that gate.
+The v1 Android release scope is the directly attested Android root component.
+Its protected Play-distributed observation remains mandatory and must satisfy
+every root-app requirement above; fixture, emulator, sideloaded, Debug, or test
+evidence cannot replace it.
+
+The generic component runtime is locally tested, but v1 does not claim physical
+conformance for a delegated Wear, companion-package, automotive, or
+isolated-process component. That follow-up claim requires a reviewed server
+Component Definition and an expanded signed evidence schema that records only
+safe hashes/status for distinct root/child public-key thumbprints, child
+provisioning, independent refresh rotation, child-only revocation with a
+still-live root, and family-wide revocation. Missing delegated-component
+physical evidence does not block the root-only v1 release. Root-only evidence
+must never be reused to claim delegated-component physical conformance.
 
 The same restriction applies to framework compatibility: local CI tests the
 adapter against OkHttp 4.9.2 and runs the full suite with the pinned OkHttp

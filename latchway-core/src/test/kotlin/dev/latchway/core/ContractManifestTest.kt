@@ -25,7 +25,7 @@ class ContractManifestTest {
     fun authoritativeManifestMatchesRuntimeContractAndWireConstants() {
         assertEquals(1, manifest.getInt("manifest_version"))
         assertEquals(LATCHWAY_CONTRACT_VERSION, manifest.getString("contract_version"))
-        assertEquals("draft", manifest.getString("contract_status"))
+        assertEquals("released", manifest.getString("contract_status"))
 
         val wire = manifest.getJSONObject("wire_protocol")
         assertEquals(LATCHWAY_PROTOCOL_VERSION, wire.getInt("current"))
@@ -99,7 +99,7 @@ class ContractManifestTest {
             ),
             releaseEvidence.getJSONArray("release_domains").strings(),
         )
-        assertTrue(manifest.isNull("released_at"))
+        assertEquals("2026-09-01T20:25:00Z", manifest.getString("released_at"))
     }
 
     @Test
