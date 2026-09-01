@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import re
 import subprocess
 import sys
 import tarfile
@@ -21,6 +22,34 @@ SPEC.loader.exec_module(MODULE)
 
 
 class DocumentationBundleTests(unittest.TestCase):
+    def test_full_source_references_and_supported_coordinate_closure(self) -> None:
+        config = json.loads((ROOT / "docs-bundle.config.json").read_text(encoding="utf-8"))
+        release_notes = next(item for item in config["documents"] if item["kind"] == "release_notes")["source"]
+        for source in (release_notes, *(item["source"] for item in config["examples"])):
+            line_count = len((ROOT / source["file"]).read_text(encoding="utf-8").splitlines())
+            self.assertEqual(source["start_line"], 1)
+            self.assertEqual(source["end_line"], line_count)
+
+        supported = {item["name"] for item in config["supported_versions"]}
+        self.assertTrue({
+            "dev.latchway:latchway-core", "dev.latchway:latchway-okhttp",
+            "dev.latchway:latchway-play-integrity", "dev.latchway:latchway-firebase-auth",
+            "dev.latchway:latchway-bom", "Android API", "Android compile SDK",
+            "Android Gradle Plugin", "Gradle", "Kotlin", "Java bytecode",
+            "Play Integrity", "Firebase BOM", "Ktor OkHttp", "LangChain4j OkHttp SPI",
+            "React Native bridge",
+        } <= supported)
+        publishing = "\n".join(
+            (ROOT / "docs/publishing.md").read_text(encoding="utf-8").splitlines()[2:36]
+        )
+        for coordinate in (
+            "dev.latchway:latchway-core", "dev.latchway:latchway-okhttp",
+            "dev.latchway:latchway-play-integrity", "dev.latchway:latchway-firebase-auth",
+            "dev.latchway:latchway-bom",
+        ):
+            self.assertIn(coordinate, publishing)
+        self.assertIn("1.0.0", publishing)
+
     def test_bundle_is_reproducible_self_describing_and_checksum_bound(self) -> None:
         with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
             archives = []
@@ -96,8 +125,58 @@ class DocumentationBundleTests(unittest.TestCase):
             self.assertEqual(set(checksums), set(payloads) - {"SHA256SUMS"})
             for name, digest in checksums.items():
                 self.assertEqual(hashlib.sha256(payloads[name]).hexdigest(), digest)
+            catalogs = {}
             for name, key in (("supported-versions.json", "versions"), ("public-symbols.json", "symbols"), ("errors.json", "errors"), ("examples.json", "examples")):
-                self.assertTrue(json.loads(payloads[name])[key])
+                catalogs[name] = json.loads(payloads[name])[key]
+                self.assertTrue(catalogs[name])
+            for name in ("public-symbols.json", "errors.json"):
+                for row in catalogs[name]:
+                    source = row["source"]
+                    line = (ROOT / source["file"]).read_text(encoding="utf-8").splitlines()[
+                        source["region"]["start_line"] - 1
+                    ]
+                    self.assertIn(row["name"], line)
+
+            symbols = catalogs["public-symbols.json"]
+            symbol_locations = {
+                (row["name"], row["source"]["file"], row["source"]["region"]["start_line"])
+                for row in symbols
+            }
+            for path in sorted(ROOT.glob("latchway-*/src/main/**/*.kt")):
+                lines = path.read_text(encoding="utf-8").splitlines()
+                in_public_data_class = False
+                parenthesis_depth = 0
+                for line_number, line in enumerate(lines, 1):
+                    if re.match(r"^[ \t]*public data class [A-Za-z]", line):
+                        inline = re.search(r"public (?:val|var) (?P<name>[A-Za-z][A-Za-z0-9_]*)", line)
+                        if inline is not None:
+                            self.assertIn(
+                                (inline.group("name"), path.relative_to(ROOT).as_posix(), line_number),
+                                symbol_locations,
+                            )
+                        in_public_data_class = True
+                        parenthesis_depth = line.count("(") - line.count(")")
+                        if parenthesis_depth <= 0:
+                            in_public_data_class = False
+                        continue
+                    if in_public_data_class:
+                        property_match = re.match(
+                            r"^[ \t]*(?!(?:private|internal|protected) )"
+                            r"(?:public |override )?(?:val|var) (?P<name>[A-Za-z][A-Za-z0-9_]*)",
+                            line,
+                        )
+                        if property_match is not None:
+                            self.assertIn(
+                                (property_match.group("name"), path.relative_to(ROOT).as_posix(), line_number),
+                                symbol_locations,
+                            )
+                        parenthesis_depth += line.count("(") - line.count(")")
+                        if parenthesis_depth <= 0:
+                            in_public_data_class = False
+            symbol_names = {row["name"] for row in symbols}
+            self.assertNotIn("interface", symbol_names)
+            self.assertTrue({"identityToken", "execute", "close", "maximumAttempts"} <= symbol_names)
+            self.assertIn("response_invalid", {row["name"] for row in catalogs["errors.json"]})
 
     def test_path_validation_and_archive_verifier_reject_traversal(self) -> None:
         for value in ("/absolute", "../escape", "a/../escape", "a\\b"):
