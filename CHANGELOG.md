@@ -56,11 +56,11 @@ Versioning once package publication begins.
   rejects same-origin requests outside the allowed Latchway data-plane paths,
   including encoded opaque-path traversal.
 
-## [1.0.0] - 2026-08-29
+## Planned 1.0.0 candidate baseline (unreleased)
 
 ### Changed
 
-- Established the initial SDK release baseline; compatibility is declared for server `1.0.0`
+- Established the initial unpublished SDK candidate baseline; compatibility is declared for server `1.0.0`
   through the tested `1.0.x` series. The server-owned trusted input-accounting contract
   adds no client wire fields, and indeterminate-operation errors preserve their
   required operation ID.
