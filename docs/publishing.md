@@ -81,8 +81,40 @@ private OpenPGP key and password to a fresh no-checkout signing job;
 `maven-central` supplies only the Portal username and password to a different
 fresh no-checkout network publisher; `release-administration` supplies only the
 read-only administration token; and `github-release` protects the final
-GitHub-token/OIDC publication. Each environment should require an authorized
-reviewer. Do not duplicate one environment's secrets into another.
+GitHub-token/OIDC publication. Each environment must require an authorized
+reviewer, enable **Prevent self-review**, disable administrator bypass where
+GitHub offers it, and allow deployments only from the exact `main` branch. Each
+environment owns the reserved non-secret
+`LATCHWAY_RELEASE_CONTROL_POLICY_ID` variable with the unique value below:
+
+```text
+maven-central-signing  = latchway-release-controls-v1:latchway-android:maven-central-signing
+release-administration = latchway-release-controls-v1:latchway-android:release-administration
+maven-central          = latchway-release-controls-v1:latchway-android:maven-central
+github-release         = latchway-release-controls-v1:latchway-android:github-release
+```
+
+Never define that variable at repository or organization scope. GitHub would
+otherwise auto-create a missing referenced environment without protection
+rules; the first step in every privileged job checks the exact environment-only
+value before any action or step uses a credential, requests an OIDC token, or
+performs a mutation. Do not duplicate one environment's secrets into another.
+
+Both immutable-release administration checks require `enabled: true` and
+`enforced_by_owner: true`, then emit a SHA-256-bound lease naming the repository,
+phase, workflow run, and run attempt with a maximum lifetime of ten minutes.
+The Portal publisher and final GitHub publisher validate the exact one-file
+handoff, hash, complete binding, and expiry immediately before every external
+mutation, including provenance attestation. Use
+**Re-run all jobs** after a downstream failure; partial or single-job reruns
+deliberately reject a lease from a prior workflow attempt.
+
+The five privileged secret names listed above must exist only in their named
+environments. Never define one as a repository secret or as an organization
+secret visible to this repository: GitHub secret lookup otherwise falls through
+to that broader scope if an environment secret is missing. The central
+release-control reconciler rejects that configuration using secret names and
+visibility only; it never reads secret values.
 
 Repository administrators must also install an active ruleset for
 `refs/tags/v*` before release: tag creation is restricted to the GitHub Actions
@@ -189,8 +221,8 @@ binds the exact annotated tag object, target commit, and promotion-derived
 message without publication credentials. Post-registry evidence retains hashes of
 every artifact and checksum sidecar, every exact armored signature, normalized
 GnuPG status, the reviewed public-key hash, and the deployment record/status.
-Only after those files exist does the workflow seal `SHA256SUMS` over all eight
-other fixed assets. A separate fresh no-checkout OIDC job attests the exact nine
+Only after those files exist does the workflow seal `SHA256SUMS` over all nine
+other fixed assets. A separate fresh no-checkout OIDC job attests the exact ten
 assets, creates or resumes the fixed-asset draft, and attaches them.
 Immediately before that OIDC job, a second no-OIDC administration job rechecks
 the immutable-release policy; the attesting job also rejects any missing, extra,
@@ -204,11 +236,11 @@ immutable assets without mutation.
 
 Immediately before the irreversible publish transition, the reconciler fetches
 the remote annotated tag and revalidates its exact object, commit target, and
-message again. After GitHub reports the release immutable, a strict verifier
-decodes the verified release DSSE statement and requires its release predicate
-and subject digest to name that exact annotated tag object. The raw release and
-per-asset verification JSON plus normalized commit-binding proof are retained
-as a 90-day workflow artifact.
+message again. After GitHub reports the release immutable, GitHub CLI
+cryptographically verifies the release and every asset, and the workflow reads
+the annotated tag again. The raw release and per-asset verification JSON plus a
+normalized proof binding the immutable release record to that tag object,
+commit, and message are retained as a 90-day workflow artifact.
 
 The four protected environments described above must be configured before the
 workflow can run. `LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN` is a short-lived,
@@ -225,11 +257,9 @@ The workflow creates GitHub build-provenance attestations for the deterministic
 repository, reviewed public key, upload intent, deployment record/status, and
 `maven-central-release-evidence.json`.
 
-If the core repository is private, configure the repository secret
-`LATCHWAY_SIBLING_REPOSITORIES_READ_TOKEN` as a fine-grained Contents: read
-credential scoped to `Latchway/latchway`. It authenticates only the exact core
-promotion asset download and attestation verification. Public core repositories
-need no secret and fall back to the job token.
+The public `Latchway/latchway` release asset and attestation are read with the
+SDK workflow's read-only `github.token`. Do not configure a sibling-repository
+token for this public-core path.
 
 For a release-candidate rehearsal before a tag exists, an authorized release
 operator may set `LATCHWAY_ALLOW_UNTAGGED_RELEASE_FOR_STAGING=true`. The clean
