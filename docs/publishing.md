@@ -57,7 +57,10 @@ Before running it:
    release asset; private signing material is never written to the repository
    or release assets.
 4. Update every source and Gradle version declaration, run the repository test
-   suite, commit the exact release, and create the matching `vVERSION` tag.
+   suite, and commit the exact release. Do not create or push the matching
+   `vVERSION` tag manually: the evidence-gated `.github/workflows/release.yml`
+   promotion creates, or verifies, the annotated tag only after the protected
+   release inputs pass.
 5. Start from a clean worktree. Do not place credentials or signing material in
    this repository, `gradle.properties`, command-line properties, build output,
    or CI logs.
@@ -80,6 +83,14 @@ fresh no-checkout network publisher; `release-administration` supplies only the
 read-only administration token; and `github-release` protects the final
 GitHub-token/OIDC publication. Each environment should require an authorized
 reviewer. Do not duplicate one environment's secrets into another.
+
+Repository administrators must also install an active ruleset for
+`refs/tags/v*` before release: tag creation is restricted to the GitHub Actions
+integration used by the release workflow, while tag update, deletion, and
+non-fast-forward changes are denied. Operators and administrators must not
+manually create, move, or delete a release tag. This server-side rule is an
+external release prerequisite; repository documentation and workflow checks do
+not substitute for it.
 
 `LATCHWAY_SIGNING_KEY` is the ASCII-armored private key, not a key-ring path.
 Gradle user-home properties remain supported only for controlled local signing
