@@ -7,10 +7,10 @@
   "documents": [
     {"path": "quickstart/basic-client.kt", "kind": "quickstart", "source": {"file": "sample-basic/src/main/kotlin/dev/latchway/sample/basic/MainActivity.kt", "start_line": 1, "end_line": 39}},
     {"path": "quickstart/firebase-auth.kt", "kind": "quickstart", "source": {"file": "sample-firebase/src/main/kotlin/dev/latchway/sample/firebase/MainActivity.kt", "start_line": 1, "end_line": 301}},
-    {"path": "frameworks/retrofit.kt", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt", "start_line": 28, "end_line": 74}},
+    {"path": "frameworks/retrofit.kt", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt", "start_line": 30, "end_line": 104}},
     {"path": "frameworks/openai-kotlin.kt", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/OpenAiKotlinFrameworkConformanceTest.kt", "start_line": 28, "end_line": 56}},
     {"path": "frameworks/langchain4j.kt", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/LangChain4jFrameworkConformanceTest.kt", "start_line": 21, "end_line": 56}},
-    {"path": "frameworks/koog.kt", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt", "start_line": 42, "end_line": 88}},
+    {"path": "frameworks/koog.kt", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt", "start_line": 42, "end_line": 91}},
     {"path": "release-notes.md", "kind": "release_notes", "source": {"file": "CHANGELOG.md", "start_line": 1, "end_line": 113}}
   ],
   "supported_versions": [

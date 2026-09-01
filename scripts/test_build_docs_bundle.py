@@ -42,6 +42,34 @@ class DocumentationBundleTests(unittest.TestCase):
             manifest = json.loads(payloads["bundle-manifest.json"])
             self.assertEqual(manifest["schema_version"], MODULE.SCHEMA)
             self.assertEqual(manifest["release"]["version"], "1.0.0")
+            retrofit = payloads["frameworks/retrofit.kt"].decode("utf-8")
+            self.assertTrue(retrofit.startswith(
+                "    @Test\n"
+                "    fun retrofitUsesTheProductionHooksAndReplacesItsPlaceholderAuthorization() {\n"
+            ))
+            self.assertIn(
+                "fun retrofitStreamingIsIncrementalAndCallCancellationReachesOkHttp()",
+                retrofit,
+            )
+            self.assertIn("canceled.await(2, TimeUnit.SECONDS)", retrofit)
+            self.assertTrue(retrofit.endswith(
+                "        } finally {\n"
+                "            close(http, harness, server)\n"
+                "        }\n"
+                "    }\n"
+            ))
+            koog = payloads["frameworks/koog.kt"].decode("utf-8")
+            self.assertTrue(koog.startswith(
+                "    @Test\n"
+                "    fun koogPreservesChatToolsAndStructuredOutputThroughLatchwayOkHttp() = runBlocking {\n"
+            ))
+            self.assertIn("structured-output", koog)
+            self.assertTrue(koog.endswith(
+                "        } finally {\n"
+                "            close(fixture, harness, server)\n"
+                "        }\n"
+                "    }\n"
+            ))
             self.assertEqual({item["kind"] for item in manifest["files"]} >= {
                 "quickstart", "framework", "release_notes", "supported_versions",
                 "public_symbols", "errors", "examples",
