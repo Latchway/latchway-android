@@ -19,6 +19,7 @@ fi
 
 base_url=${LATCHWAY_MAVEN_CENTRAL_BASE_URL:-https://repo1.maven.org/maven2/dev/latchway}
 expected_repository=${LATCHWAY_CENTRAL_EXPECTED_REPOSITORY:-}
+expected_portal_bundle=${LATCHWAY_CENTRAL_PORTAL_BUNDLE:-}
 expected_signing_fingerprint=${LATCHWAY_CENTRAL_SIGNING_FINGERPRINT:-}
 expected_signing_public_key=${LATCHWAY_CENTRAL_SIGNING_PUBLIC_KEY:-}
 if [[ -n "$expected_repository" ]]; then
@@ -33,6 +34,10 @@ if [[ -n "$expected_repository" ]]; then
   fi
   if [[ -n "$expected_signing_public_key" && ! -f "$expected_signing_public_key" ]]; then
     echo "The reviewed Maven Central public signing key is missing" >&2
+    exit 64
+  fi
+  if [[ -n "$expected_portal_bundle" && ( ! -f "$expected_portal_bundle" || -L "$expected_portal_bundle" ) ]]; then
+    echo "The reviewed signed Portal bundle is missing or unsafe" >&2
     exit 64
   fi
 fi
@@ -67,6 +72,45 @@ if [[ -n "$expected_repository" ]]; then
     echo "Retrieved Maven Central signing key fingerprint mismatch" >&2
     exit 1
   }
+fi
+
+portal_signatures=
+if [[ -n "$expected_portal_bundle" ]]; then
+  portal_signatures="$temporary_root/portal-signatures"
+  python3 - "$expected_portal_bundle" "$version" "$portal_signatures" <<'PY'
+from pathlib import Path
+import sys
+import zipfile
+
+archive, version, destination = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+modules = ("latchway-core", "latchway-okhttp", "latchway-play-integrity", "latchway-firebase-auth", "latchway-bom")
+expected = []
+for module in modules:
+    extensions = ["pom", "module", "sources.jar", "javadoc.jar"]
+    if module != "latchway-bom":
+        extensions.append("aar")
+    for extension in extensions:
+        separator = "." if extension in {"pom", "module", "aar"} else "-"
+        name = f"{module}-{version}{separator}{extension}.asc"
+        expected.append(f"dev/latchway/{module}/{version}/{name}")
+with zipfile.ZipFile(archive) as source:
+    infos = source.infolist()
+    names = [item.filename for item in infos]
+    if len(names) != len(set(names)) or not set(expected).issubset(names):
+        raise SystemExit("signed Portal candidate has an invalid signature closure")
+    by_name = {item.filename: item for item in infos}
+    for name in expected:
+        info = by_name[name]
+        if info.is_dir() or not 0 < info.file_size <= 65536:
+            raise SystemExit(f"signed Portal candidate signature is unsafe: {name}")
+        with source.open(info) as payload:
+            value = payload.read(65537)
+        if len(value) != info.file_size:
+            raise SystemExit(f"signed Portal candidate signature size changed: {name}")
+        output = destination / name
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(value)
+PY
 fi
 
 bom_url="$base_url/latchway-bom/$version/latchway-bom-$version.pom"
@@ -122,6 +166,16 @@ for module in "${modules[@]}"; do
     fi
     actual=$(shasum -a 256 "$temporary_root/$name" | awk '{print $1}')
     signature_sha256=$(shasum -a 256 "$temporary_root/$name.asc" | awk '{print $1}')
+    expected_signature_sha256=
+    if [[ -n "$portal_signatures" ]]; then
+      expected_signature="$portal_signatures/dev/latchway/$module/$version/$name.asc"
+      cmp -s "$expected_signature" "$temporary_root/$name.asc" || {
+        echo "Maven Central signature differs from the exact signed Portal candidate: $name.asc" >&2
+        exit 1
+      }
+      expected_signature_sha256=$(shasum -a 256 "$expected_signature" | awk '{print $1}')
+      [[ "$expected_signature_sha256" == "$signature_sha256" ]]
+    fi
     for algorithm in md5 sha1 sha256 sha512; do
       curl --fail --silent --show-error --location \
         --output "$temporary_root/$name.$algorithm" "$url.$algorithm"
@@ -165,10 +219,11 @@ for module in "${modules[@]}"; do
         }
       done
     fi
-    printf '%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$module/$version/$name" "$actual" \
       "$(wc -c < "$temporary_root/$name" | tr -d '[:space:]')" \
-      "$signature_sha256" "$temporary_root/gpg-proof/$name.json" >> "$proof_rows"
+      "$signature_sha256" "$expected_signature_sha256" \
+      "$temporary_root/gpg-proof/$name.json" >> "$proof_rows"
   done
   grep -Fq "<tag>v$version</tag>" "$temporary_root/$module-$version.pom" || {
     echo "Maven Central POM metadata is invalid for $module" >&2
@@ -195,6 +250,7 @@ elif [[ "$require_deployment_evidence" != false ]]; then
 fi
 python3 - "$version" "$expected_repository" "$expected_signing_fingerprint" "$public_key_sha256" \
   "$proof_rows" "$temporary_root" "$deployment_intent" "$deployment_record" "$deployment_status" \
+  "$expected_portal_bundle" \
   "$script_directory" <<'PY'
 import hashlib
 import json
@@ -212,6 +268,7 @@ import sys
     deployment_intent,
     deployment_record,
     deployment_status,
+    expected_portal_bundle,
     script_directory,
 ) = sys.argv[1:]
 
@@ -227,7 +284,7 @@ def sha256(path: Path) -> str:
 files = []
 public_manifest = []
 for line in Path(rows_path).read_text(encoding="utf-8").splitlines():
-    path, artifact_sha256, size, signature_sha256, gpg_proof_path = line.split("\t")
+    path, artifact_sha256, size, signature_sha256, expected_signature_sha256, gpg_proof_path = line.split("\t")
     name = Path(path).name
     signature = Path(temporary_root, f"{name}.asc")
     if signature.stat().st_size > 65536:
@@ -252,8 +309,10 @@ for line in Path(rows_path).read_text(encoding="utf-8").splitlines():
         "sha256": artifact_sha256,
         "bytes": int(size),
         "signature_sha256": signature_sha256,
+        "expected_signature_sha256": expected_signature_sha256 or None,
         "signature_bytes": signature.stat().st_size,
         "signature_armored": signature.read_text(encoding="ascii"),
+        "signature_byte_identical": bool(expected_portal_bundle),
         "gpg_status": gpg_status,
         "checksums": checksums,
         "checksums_byte_identical": bool(expected_repository),
@@ -317,6 +376,7 @@ print(json.dumps({
     "primary_artifacts_byte_identical": bool(expected_repository),
     "checksum_files_byte_identical": bool(expected_repository),
     "signature_files_present": True,
+    "signature_files_byte_identical": bool(expected_portal_bundle),
     "signatures_cryptographically_verified": bool(expected_repository),
     "signing_fingerprint": signing_fingerprint,
     "reviewed_public_key_sha256": public_key_sha256,

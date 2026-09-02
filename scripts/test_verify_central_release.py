@@ -113,7 +113,7 @@ fi
             path.with_name(f"{path.name}.{algorithm}").write_text(
                 hashlib.new(algorithm, payload).hexdigest(), encoding="utf-8"
             )
-        path.with_name(f"{path.name}.asc").write_text("-----BEGIN PGP SIGNATURE-----\ntest\n", encoding="utf-8")
+        path.with_name(f"{path.name}.asc").write_text("-----BEGIN PGP SIGNATURE-----\nfixture\n", encoding="utf-8")
 
     def invoke(
         self,
@@ -161,6 +161,25 @@ fi
         self.assertEqual(evidence["files"][0]["gpg_status"]["primary_fingerprint"], self.fingerprint)
         self.assertEqual(len(evidence["files"][0]["checksums"]), 4)
         self.assertIn("signature_armored", evidence["files"][0])
+
+    def test_public_signatures_are_exact_signed_portal_candidate_bytes(self) -> None:
+        portal = self.root / "signed-portal.zip"
+        write_zip(portal, self.expected, signed=True)
+        result = self.invoke(extra_environment={"LATCHWAY_CENTRAL_PORTAL_BUNDLE": str(portal)})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        evidence = json.loads(result.stdout)
+        self.assertTrue(evidence["signature_files_byte_identical"])
+        self.assertTrue(evidence["files"][0]["signature_byte_identical"])
+        self.assertEqual(
+            evidence["files"][0]["signature_sha256"],
+            evidence["files"][0]["expected_signature_sha256"],
+        )
+
+        signature = self.remote / "dev/latchway/latchway-core/1.0.0/latchway-core-1.0.0.aar.asc"
+        signature.write_text("-----BEGIN PGP SIGNATURE-----\ndifferent-valid-fixture\n", encoding="utf-8")
+        rejected = self.invoke(extra_environment={"LATCHWAY_CENTRAL_PORTAL_BUNDLE": str(portal)})
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("differs from the exact signed Portal candidate", rejected.stderr)
 
     def test_signing_subkey_is_accepted_only_through_validsig_primary_field(self) -> None:
         subkey = "B" * 40

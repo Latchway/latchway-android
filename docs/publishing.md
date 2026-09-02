@@ -146,6 +146,116 @@ deployment-recording release script. The build also rejects signing while the
 configuration cache is active, before it reads private-key values, so secret
 material is not persisted there.
 
+## Explicit single-maintainer v1 profile
+
+`.github/workflows/single-maintainer-release.yml` is an additive, manually
+dispatched path for the explicitly authorized `single_maintainer_v1` profile.
+It does not change `.github/workflows/release.yml`, its promotion verifier, or
+any of the strict environments above. The manual path is intentionally honest
+about its lower assurance: independent human review and external
+platform/device/provider evidence are deferred, and its intent, release
+evidence, annotated tag, release title, and release body all forbid describing
+the result as `release_qualified`, fully evidence-gated, or independently
+reviewed.
+
+The global profile still requires exact Docker Compose and GCP Cloud Run
+evidence. Before any Android tag or Maven publication, this workflow downloads
+the public core `v1.0.0` release and cryptographically and semantically verifies
+its exact `single_maintainer_v1` profile record, annotated core tag, scans,
+SBOMs, image digest, candidate provenance, and the authenticated Compose and
+Cloud Run captures. The `contract.lock` core commit must be an ancestor of that
+published core commit. AWS, Fly.io,
+Cloudflare Containers, Mintlify, physical Play Integrity, Firebase App Check,
+Turnstile, live-provider, and independent-review evidence remain explicitly
+deferred.
+
+Before this workflow may be dispatched, create four main-only GitHub
+environments with no required reviewer. The absence of a reviewer is deliberate
+for this one lower-assurance profile and must not be copied to the strict
+release environments:
+
+```text
+single-maintainer-v1-signing
+  LATCHWAY_RELEASE_CONTROL_POLICY_ID = latchway-release-controls-v1:latchway-android:single-maintainer-v1-signing
+  LATCHWAY_MAVEN_SIGNING_FINGERPRINT = uppercase 40-character primary fingerprint
+  LATCHWAY_SIGNING_KEY                = environment secret, ASCII-armored private key
+  LATCHWAY_SIGNING_PASSWORD           = environment secret
+
+single-maintainer-v1-maven
+  LATCHWAY_RELEASE_CONTROL_POLICY_ID = latchway-release-controls-v1:latchway-android:single-maintainer-v1-maven
+  LATCHWAY_MAVEN_SIGNING_FINGERPRINT = the same uppercase primary fingerprint
+  LATCHWAY_MAVEN_CENTRAL_USERNAME    = environment secret, Portal token username
+  LATCHWAY_MAVEN_CENTRAL_PASSWORD    = environment secret, Portal token password
+
+single-maintainer-v1-verification
+  LATCHWAY_RELEASE_CONTROL_POLICY_ID = latchway-release-controls-v1:latchway-android:single-maintainer-v1-verification
+  LATCHWAY_MAVEN_SIGNING_FINGERPRINT = the same uppercase primary fingerprint
+
+single-maintainer-v1-github
+  LATCHWAY_RELEASE_CONTROL_POLICY_ID = latchway-release-controls-v1:latchway-android:single-maintainer-v1-github
+```
+
+Do not define those secrets at repository or organization scope. The signing
+job never receives Portal credentials; the Portal job rejects private signing
+material; public byte verification receives neither; and the tag/release job
+uses only the run-scoped `GITHUB_TOKEN` plus GitHub OIDC for build-provenance
+attestations. The tag ruleset must allow this GitHub Actions workflow to create
+`v1.0.0`, and repository Actions settings must allow `GITHUB_TOKEN` to write
+contents and attestations. Verify Maven Central ownership of `dev.latchway`,
+publish the OpenPGP public key on a supported key server, and keep the exact
+same primary fingerprint in all three named environment variables.
+
+Dispatch only from `main`, with the exact current 40-character `main` commit,
+version `1.0.0`, profile `single_maintainer_v1`, and confirmation phrase
+`publish-v1.0.0-with-deferred-assurance`. A source-free first step authenticates
+the GitHub run ID, attempt, active workflow path, `main` head branch, and
+requested source commit before candidate checkout; dispatch strings reach shell
+commands only through quoted environment variables. The protected tag job then
+rechecks the intent commit, dispatch commit, workflow SHA, and current public
+`main` head before any tag mutation. Before creating the annotated tag,
+the workflow runs every offline release/evidence regression, the dependency
+scan, supported lower-version framework fixtures, all Gradle unit/assembly/lint
+gates, two deterministic Maven builds, documentation bundling, and the pinned
+core/PostgreSQL conformance gate. A failure leaves no tag.
+
+The additive workflow treats one workflow run as the transaction owner. Its
+intent hash binds the run ID and run attempt into the annotated tag, and the
+intent job rejects a pre-existing `v1.0.0` tag owned by any other transaction.
+Once the tag, Portal deployment, Maven coordinate, or GitHub draft has been
+created, resume only with **Re-run failed jobs** on that same workflow run.
+Never use **Re-run all jobs** and never start a new workflow dispatch after a
+mutation: both produce a different intent and fail the early tag-owner guard.
+All prerequisite intent, unsigned, signed, Portal-state, and release artifacts
+are retained for 90 days so the same run can adopt only exact bytes.
+
+After that boundary it:
+
+1. creates or adopts only the exact annotated tag and message;
+2. signs only the five-coordinate closed Maven set with the pinned OpenPGP key;
+3. stages or adopts the deterministic `USER_MANAGED` Portal deployment;
+4. sends the publish transition only for that exact deployment UUID;
+5. downloads and byte-compares every public artifact and checksum, verifies
+   every signature against the pinned primary fingerprint, and requires every
+   public `.asc` file to be byte-identical to the signature in the exact signed
+   Portal candidate ZIP;
+6. attests the complete fixed release-asset set with GitHub build provenance;
+7. creates or resumes the exact GitHub release, rejecting different notes,
+   metadata, assets, or bytes and never overwriting an existing asset.
+
+Already-public Maven coordinates are adoptable only when all five coordinates,
+primary artifacts, four checksum sidecars, and exact Portal-candidate signature
+bytes are complete and byte-identical to the deterministic candidate. A partial release or any
+different byte fails closed. Reruns reconcile the deterministic Portal name,
+deployment UUID, immutable state files, annotated tag object, and release
+assets.
+
+This profile does not require GitHub's independent-review or immutable-release
+administration gates. That is an explicit assurance reduction, not evidence
+that those controls passed. Once its distinct `v1.0.0` tag and release are
+published, the strict workflow cannot retroactively relabel the same bytes as a
+strict evidence-gated v1; a later strict release must use a new version and pass
+the strict promotion path from the start.
+
 ## Stage a release
 
 The protected `repository_dispatch` workflow is the supported final-release

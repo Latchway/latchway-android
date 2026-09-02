@@ -16,12 +16,16 @@ TEST_PATHS = (
     "scripts/test_central_fixture.py",
     "scripts/test_offline_release_inventory.py",
     "scripts/test_publish_central_policy.py",
+    "scripts/test_publish_validated_central.py",
+    "scripts/test_public_core_release.py",
     "scripts/test_reconcile_github_release.py",
     "scripts/test_release_promotion.py",
     "scripts/test_require_gh_version.py",
+    "scripts/test_single_maintainer_workflow.py",
     "scripts/test_verify_central_release.py",
     "scripts/test_verify_github_release_attestation.py",
     "scripts/test_verify_gpg_status.py",
+    "scripts/test_verify_maintainer_release.py",
 )
 
 
