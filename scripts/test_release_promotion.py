@@ -757,16 +757,20 @@ class ReleaseWorkflowTests(unittest.TestCase):
             return value if following is None else value.split(f"\n  {following}:\n", 1)[0]
 
         blocks = {
+            "promote": job("promote", "package"),
             "authorize-release": job("authorize-release", "package"),
             "sign-central": job("sign-central", "publish-central"),
             "publish-central": job("publish-central", "verify-publication"),
+            "verify-publication": job("verify-publication", "github-release-policy"),
             "github-release-policy": job("github-release-policy", "github-release"),
             "github-release": job("github-release"),
         }
         expected_ids = {
+            "promote": "latchway-release-controls-v1:latchway-android:github-release",
             "authorize-release": "latchway-release-controls-v1:latchway-android:release-administration",
             "sign-central": "latchway-release-controls-v1:latchway-android:maven-central-signing",
             "publish-central": "latchway-release-controls-v1:latchway-android:maven-central",
+            "verify-publication": "latchway-release-controls-v1:latchway-android:maven-publication-verification",
             "github-release-policy": "latchway-release-controls-v1:latchway-android:release-administration",
             "github-release": "latchway-release-controls-v1:latchway-android:github-release",
         }

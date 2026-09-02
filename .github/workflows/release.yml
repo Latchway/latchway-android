@@ -161,6 +161,7 @@ jobs:
     needs: verify-promotion
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    environment: github-release
     permissions:
       contents: write
     outputs:
@@ -170,6 +171,13 @@ jobs:
       core_tag: ${{ needs.verify-promotion.outputs.core_tag }}
       report_sha256: ${{ needs.verify-promotion.outputs.report_sha256 }}
     steps:
+      - name: Verify the exact protected github-release environment
+        shell: bash
+        env:
+          OBSERVED_POLICY_ID: ${{ vars.LATCHWAY_RELEASE_CONTROL_POLICY_ID }}
+        run: |
+          set -Eeuo pipefail
+          test "$OBSERVED_POLICY_ID" = "latchway-release-controls-v1:latchway-android:github-release"
       - name: Create or verify evidence-gated annotated SDK tag using fixed API calls
         shell: bash
         env:
@@ -988,6 +996,7 @@ jobs:
     needs: [promote, sign-central, publish-central]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    environment: maven-publication-verification
     permissions:
       actions: read
       contents: read
@@ -997,6 +1006,13 @@ jobs:
       RELEASE_VERSION: ${{ needs.promote.outputs.version }}
       LATCHWAY_CENTRAL_SIGNING_FINGERPRINT: ${{ vars.LATCHWAY_MAVEN_SIGNING_FINGERPRINT }}
     steps:
+      - name: Verify the exact protected maven-publication-verification environment
+        shell: bash
+        env:
+          OBSERVED_POLICY_ID: ${{ vars.LATCHWAY_RELEASE_CONTROL_POLICY_ID }}
+        run: |
+          set -Eeuo pipefail
+          test "$OBSERVED_POLICY_ID" = "latchway-release-controls-v1:latchway-android:maven-publication-verification"
       - name: Check out exact verifier source without persisted credentials
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:

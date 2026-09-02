@@ -80,7 +80,9 @@ CI keeps those inputs in separate protected environments. The unprivileged
 private OpenPGP key and password to a fresh no-checkout signing job;
 `maven-central` supplies only the Portal username and password to a different
 fresh no-checkout network publisher; `release-administration` supplies only the
-read-only administration token; and `github-release` protects the final
+read-only administration token; `maven-publication-verification` is a
+credential-free approval boundary for independent public-registry
+verification; and `github-release` protects both promotion and final
 GitHub-token/OIDC publication. Each environment must require an authorized
 reviewer, enable **Prevent self-review**, disable administrator bypass where
 GitHub offers it, and allow deployments only from the exact `main` branch. Each
@@ -91,12 +93,14 @@ environment owns the reserved non-secret
 maven-central-signing  = latchway-release-controls-v1:latchway-android:maven-central-signing
 release-administration = latchway-release-controls-v1:latchway-android:release-administration
 maven-central          = latchway-release-controls-v1:latchway-android:maven-central
+maven-publication-verification = latchway-release-controls-v1:latchway-android:maven-publication-verification
 github-release         = latchway-release-controls-v1:latchway-android:github-release
 ```
 
 Never define that variable at repository or organization scope. GitHub would
 otherwise auto-create a missing referenced environment without protection
-rules; the first step in every privileged job checks the exact environment-only
+rules; the first step in every job that names one of these protected
+environments checks the exact environment-only
 value before any action or step uses a credential, requests an OIDC token, or
 performs a mutation. Do not duplicate one environment's secrets into another.
 
@@ -242,7 +246,7 @@ the annotated tag again. The raw release and per-asset verification JSON plus a
 normalized proof binding the immutable release record to that tag object,
 commit, and message are retained as a 90-day workflow artifact.
 
-The four protected environments described above must be configured before the
+The five protected environments described above must be configured before the
 workflow can run. `LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN` is a short-lived,
 least-privilege fine-grained token used only by the protected no-checkout
 preflight for the repository immutable-release administration setting;

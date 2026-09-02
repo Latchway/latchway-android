@@ -20,12 +20,20 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    environment: physical-evidence-signing
     permissions:
       artifact-metadata: write
       attestations: write
       contents: read
       id-token: write
     steps:
+      - name: Verify the exact protected physical-evidence-signing environment
+        shell: bash
+        env:
+          OBSERVED_POLICY_ID: ${{ vars.LATCHWAY_RELEASE_CONTROL_POLICY_ID }}
+        run: |
+          set -Eeuo pipefail
+          test "$OBSERVED_POLICY_ID" = "latchway-release-controls-v1:latchway-android:physical-evidence-signing"
       - name: Check out exact Android source as data
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -96,6 +104,13 @@ jobs:
       actions: read
       contents: read
     steps:
+      - name: Verify the exact protected play-integrity-production environment
+        shell: bash
+        env:
+          OBSERVED_POLICY_ID: ${{ vars.LATCHWAY_RELEASE_CONTROL_POLICY_ID }}
+        run: |
+          set -Eeuo pipefail
+          test "$OBSERVED_POLICY_ID" = "latchway-release-controls-v1:latchway-android:play-integrity-production"
       - name: Verify the fresh one-job collector lease before receiving source
         shell: bash
         env:
@@ -394,6 +409,13 @@ jobs:
       contents: read
       id-token: write
     steps:
+      - name: Verify the exact protected physical-evidence-signing environment
+        shell: bash
+        env:
+          OBSERVED_POLICY_ID: ${{ vars.LATCHWAY_RELEASE_CONTROL_POLICY_ID }}
+        run: |
+          set -Eeuo pipefail
+          test "$OBSERVED_POLICY_ID" = "latchway-release-controls-v1:latchway-android:physical-evidence-signing"
       - name: Download unsigned evidence without a checkout
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:

@@ -236,6 +236,34 @@ class PlayConformanceCandidateTests(unittest.TestCase):
         for action in actions:
             self.assertRegex(action, r"^[^@]+@[0-9a-f]{40}$")
 
+    def test_candidate_environments_are_exact_and_sentinel_first(self) -> None:
+        expected = {
+            "build-unsigned": "play-candidate-build",
+            "sign-isolated": "play-upload-signing",
+            "verify-signed": "play-candidate-verification",
+        }
+        for job_name, environment in expected.items():
+            with self.subTest(job=job_name):
+                match = re.search(
+                    rf"(?ms)^  {re.escape(job_name)}:\n(.*?)(?=^  [a-z0-9][a-z0-9-]*:\n|\Z)",
+                    WORKFLOW,
+                )
+                self.assertIsNotNone(match)
+                block = match.group(0)
+                self.assertIn(f"    environment: {environment}\n", block)
+                prefix = (
+                    "    steps:\n"
+                    f"      - name: Verify the exact protected {environment} environment\n"
+                    "        shell: bash\n"
+                    "        env:\n"
+                    "          OBSERVED_POLICY_ID: "
+                    "${{ vars.LATCHWAY_RELEASE_CONTROL_POLICY_ID }}\n"
+                    "        run: |\n"
+                    "          set -Eeuo pipefail\n"
+                    "          test \"$OBSERVED_POLICY_ID\" = "
+                    f"\"latchway-release-controls-v1:latchway-android:{environment}\"\n"
+                )
+                self.assertEqual(block.index(prefix), block.index("    steps:\n"))
     def test_signed_aab_rejects_unsigned_append_extra_signer_and_wrong_pin(self) -> None:
         for tool in ("java", "jarsigner", "keytool"):
             self.assertIsNotNone(shutil.which(tool), f"required test tool is unavailable: {tool}")

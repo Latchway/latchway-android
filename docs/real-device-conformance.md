@@ -242,6 +242,12 @@ passing-test, and redaction coordinates using fixed inline shell and `jq`, and
 only then requests OIDC and creates the attestation. Require independent
 reviewers and restrict deployments to `main`.
 
+The GitHub-hosted `authorize-source` job and the final `attest` job both reuse
+`physical-evidence-signing`; only the physical collector uses
+`play-integrity-production`. Every job that names either protected environment
+has the exact environment policy sentinel as its first step, before checkout,
+artifact access, device work, credentials, job-token use, OIDC, or attestation.
+
 The signer also validates the source attestation, trust-root signatures on the
 lease and teardown, exact grant/artifact/run coordinates, wipe receipt,
 evidence-manifest binding, independent supervisor verdict, and destruction
@@ -298,9 +304,11 @@ contains no signing configuration and never reads signing environment variables.
 The resulting AAB is intentionally **non-publishable**.
 
 For the enforceable hosted path, dispatch `Build and isolate the Play
-conformance candidate`. The first job checks out and runs candidate code without
-any key material, then uploads only the exact four-file unsigned set. A fresh
-`play-upload-signing` environment job has no checkout and no Gradle. Before its
+conformance candidate`. The checkout-bearing build job is isolated in the
+credential-free `play-candidate-build` environment and runs candidate code
+without any key material, then uploads only the exact four-file unsigned set. A
+fresh `play-upload-signing` environment job has no checkout and no Gradle.
+Before its
 secret-bearing step, fixed inline validation checks the complete staged set,
 manifest bindings, hashes, ZIP safety, and absence of signing metadata. It also
 hash-pins and compiles the separately carried Java verifier, re-runs its strict
@@ -338,6 +346,12 @@ traversal aliases, external-mode mutations, appended unsigned entries, deleted
 signed entries, extra signers, and partial signing fail even though plain
 `jarsigner -verify` can accept several of those cases. Only the final
 `play-conformance-signed-<run>-<attempt>` artifact has passed that independent gate.
+
+Those three environment boundaries are exact: build owns only
+`play-candidate-build`, signing owns only `play-upload-signing`, and independent
+verification owns only `play-candidate-verification`. Their exact environment
+policy sentinel is always the first step, before checkout, artifact download,
+tool execution, secret access, or job-token use.
 
 The protected signing environment supplies
 `LATCHWAY_PLAY_UPLOAD_KEYSTORE_BASE64`, the two upload-key passwords and alias as

@@ -46,8 +46,37 @@ class PhysicalEvidenceWorkflowTests(unittest.TestCase):
         self.assertIn("artifact-metadata: write", self.authorize)
         self.assertIn("actions/attest@", self.authorize)
         self.assertIn("latchway.physical-source-authorization.v1", self.authorize)
-        for forbidden in ("secrets.", "${{ vars.", "scripts/", "gradle", "adb ", "apksigner"):
+        self.assertEqual(
+            self.authorize.count("${{ vars.LATCHWAY_RELEASE_CONTROL_POLICY_ID }}"),
+            1,
+        )
+        self.assertEqual(self.authorize.count("${{ vars."), 1)
+        for forbidden in ("secrets.", "scripts/", "gradle", "adb ", "apksigner"):
             self.assertNotIn(forbidden, self.authorize)
+
+    def test_every_physical_environment_consumer_starts_with_exact_sentinel(self) -> None:
+        expected = {
+            "authorize-source": "physical-evidence-signing",
+            "play-integrity-production": "play-integrity-production",
+            "attest": "physical-evidence-signing",
+        }
+        for job_name, environment in expected.items():
+            with self.subTest(job=job_name):
+                block = job_block(self.source, job_name)
+                self.assertIn(f"    environment: {environment}\n", block)
+                prefix = (
+                    "    steps:\n"
+                    f"      - name: Verify the exact protected {environment} environment\n"
+                    "        shell: bash\n"
+                    "        env:\n"
+                    "          OBSERVED_POLICY_ID: "
+                    "${{ vars.LATCHWAY_RELEASE_CONTROL_POLICY_ID }}\n"
+                    "        run: |\n"
+                    "          set -Eeuo pipefail\n"
+                    "          test \"$OBSERVED_POLICY_ID\" = "
+                    f"\"latchway-release-controls-v1:latchway-android:{environment}\"\n"
+                )
+                self.assertEqual(block.index(prefix), block.index("    steps:\n"))
 
     def test_candidate_runner_is_one_job_jit_and_has_no_privileged_authority(self) -> None:
         self.assertIn("permissions: {}", self.source.split("jobs:", 1)[0])

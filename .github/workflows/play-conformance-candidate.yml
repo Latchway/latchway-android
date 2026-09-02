@@ -20,9 +20,17 @@ jobs:
     if: github.repository == 'Latchway/latchway-android' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    environment: play-candidate-build
     permissions:
       contents: read
     steps:
+      - name: Verify the exact protected play-candidate-build environment
+        shell: bash
+        env:
+          OBSERVED_POLICY_ID: ${{ vars.LATCHWAY_RELEASE_CONTROL_POLICY_ID }}
+        run: |
+          set -Eeuo pipefail
+          test "$OBSERVED_POLICY_ID" = "latchway-release-controls-v1:latchway-android:play-candidate-build"
       - name: Check out the exact candidate source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -112,6 +120,13 @@ jobs:
     permissions:
       actions: read
     steps:
+      - name: Verify the exact protected play-upload-signing environment
+        shell: bash
+        env:
+          OBSERVED_POLICY_ID: ${{ vars.LATCHWAY_RELEASE_CONTROL_POLICY_ID }}
+        run: |
+          set -Eeuo pipefail
+          test "$OBSERVED_POLICY_ID" = "latchway-release-controls-v1:latchway-android:play-upload-signing"
       - name: Configure Java 17
         uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
         with:
@@ -369,6 +384,13 @@ jobs:
     permissions:
       actions: read
     steps:
+      - name: Verify the exact protected play-candidate-verification environment
+        shell: bash
+        env:
+          OBSERVED_POLICY_ID: ${{ vars.LATCHWAY_RELEASE_CONTROL_POLICY_ID }}
+        run: |
+          set -Eeuo pipefail
+          test "$OBSERVED_POLICY_ID" = "latchway-release-controls-v1:latchway-android:play-candidate-verification"
       - name: Configure Java 17
         uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
         with:
