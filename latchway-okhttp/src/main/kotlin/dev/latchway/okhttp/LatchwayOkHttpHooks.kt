@@ -10,7 +10,30 @@ import okhttp3.Authenticator
 import okhttp3.HttpUrl
 import okhttp3.Interceptor
 import okhttp3.Request
+import okhttp3.Route
 import okhttp3.Response
+
+/** Marker used to reject partial or duplicate manual hook installation. */
+internal interface LatchwayOkHttpInstallationPart
+
+private class LatchwayInstalledInterceptor(
+    private val delegate: Interceptor,
+) : Interceptor, LatchwayOkHttpInstallationPart {
+    override fun intercept(chain: Interceptor.Chain): Response = delegate.intercept(chain)
+}
+
+private class LatchwayInstalledAuthenticator(
+    private val delegate: Authenticator,
+    private val fallback: Authenticator,
+    private val isGatewayOrigin: (HttpUrl) -> Boolean,
+) : Authenticator, LatchwayOkHttpInstallationPart {
+    override fun authenticate(route: Route?, response: Response): Request? =
+        if (isGatewayOrigin(response.request.url)) {
+            delegate.authenticate(route, response)
+        } else {
+            fallback.authenticate(route, response)
+        }
+}
 
 /**
  * Framework-neutral production OkHttp hooks used by [LatchwayClient].
@@ -34,21 +57,22 @@ internal class LatchwayOkHttpHooks(
     ) -> Unit,
     private val terminalResponseObserver: (Response, LatchwayComponentClient?) -> Unit,
 ) {
-    fun interceptor(defaultComponent: LatchwayComponentClient? = null): Interceptor = Interceptor { chain ->
-        val request = chain.request()
-        if (!isGatewayOrigin(request.url)) return@Interceptor chain.proceed(request)
-        val component = defaultComponent ?: request.tag(LatchwayComponentClient::class.java)
-        val feature = request.latchwayFeature()
-        requireAllowedDataPlaneRequest(request, feature)
-        val response = chain.proceed(
-            runBlocking { authorize(component, request, feature, nonce = null) },
-        )
-        terminalResponseObserver(response, component)
-        response
-    }
+    fun interceptor(defaultComponent: LatchwayComponentClient? = null): Interceptor =
+        LatchwayInstalledInterceptor(Interceptor { chain ->
+            val request = chain.request()
+            if (!isGatewayOrigin(request.url)) return@Interceptor chain.proceed(request)
+            val component = defaultComponent ?: request.tag(LatchwayComponentClient::class.java)
+            val feature = request.latchwayFeature()
+            requireAllowedDataPlaneRequest(request, feature)
+            val response = chain.proceed(
+                runBlocking { authorize(component, request, feature, nonce = null) },
+            )
+            terminalResponseObserver(response, component)
+            response
+        })
 
     /** Final dispatch guard and proof renewal for every actual network attempt. */
-    fun originGuard(): Interceptor = Interceptor { chain ->
+    fun originGuard(): Interceptor = LatchwayInstalledInterceptor(Interceptor { chain ->
         val request = chain.request()
         if (!isGatewayOrigin(request.url)) {
             if (request.hasLatchwayCredentials() || request.tag(AuthorizedHeaders::class.java) != null) {
@@ -73,37 +97,40 @@ internal class LatchwayOkHttpHooks(
         val outgoingBudget = checkNotNull(authorized.tag(LatchwayNetworkAttemptBudget::class.java))
         check(outgoingBudget.claim()) { "A fresh network-attempt budget must be unclaimed" }
         chain.proceed(authorized)
-    }
+    })
 
-    fun authenticator(): Authenticator = Authenticator { _, response ->
-        if (!isGatewayOrigin(response.request.url)) return@Authenticator null
-        val request = response.request
-        val component = request.tag(LatchwayComponentClient::class.java)
-        val decision = authenticationDecision(response)
-        when (decision.action) {
-            AuthenticationAction.NONCE -> {
-                val feature = runCatching { request.latchwayFeature() }.getOrNull()
-                    ?: return@Authenticator null
-                val nonce = decision.nonce ?: return@Authenticator null
-                runCatching {
-                    runBlocking { authorize(component, request, feature, nonce) }
-                }.getOrNull()
-            }
-            AuthenticationAction.REFRESH -> runCatching {
-                val feature = request.latchwayFeature()
-                runBlocking {
-                    refresher(component)
-                    authorize(component, request, feature, nonce = null)
+    fun authenticator(fallback: Authenticator = Authenticator.NONE): Authenticator {
+        val delegate = Authenticator { _, response ->
+            if (!isGatewayOrigin(response.request.url)) return@Authenticator null
+            val request = response.request
+            val component = request.tag(LatchwayComponentClient::class.java)
+            val decision = authenticationDecision(response)
+            when (decision.action) {
+                AuthenticationAction.NONCE -> {
+                    val feature = runCatching { request.latchwayFeature() }.getOrNull()
+                        ?: return@Authenticator null
+                    val nonce = decision.nonce ?: return@Authenticator null
+                    runCatching {
+                        runBlocking { authorize(component, request, feature, nonce) }
+                    }.getOrNull()
                 }
-            }.getOrNull()
-            AuthenticationAction.CLEAR -> {
-                val authorization = request.tag(AuthorizedHeaders::class.java)
-                    ?: return@Authenticator null
-                runCatching { runBlocking { clearer(component, authorization) } }
-                null
+                AuthenticationAction.REFRESH -> runCatching {
+                    val feature = request.latchwayFeature()
+                    runBlocking {
+                        refresher(component)
+                        authorize(component, request, feature, nonce = null)
+                    }
+                }.getOrNull()
+                AuthenticationAction.CLEAR -> {
+                    val authorization = request.tag(AuthorizedHeaders::class.java)
+                        ?: return@Authenticator null
+                    runCatching { runBlocking { clearer(component, authorization) } }
+                    null
+                }
+                AuthenticationAction.NONE -> null
             }
-            AuthenticationAction.NONE -> null
         }
+        return LatchwayInstalledAuthenticator(delegate, fallback, ::isGatewayOrigin)
     }
 
     suspend fun authorize(

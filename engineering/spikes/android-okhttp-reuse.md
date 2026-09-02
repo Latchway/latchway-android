@@ -7,20 +7,24 @@ Maven release, hosted conformance, or physical Play Integrity claim.
 
 Latchway can reuse OkHttp at the request-time seam without introducing an AI
 framework or copying a provider request model. Applications keep their existing
-OkHttp-based library and install three native hooks:
+OkHttp-based library and build one validated client snapshot:
 
 ```kotlin
-val http = OkHttpClient.Builder()
-    .addInterceptor(latchway.interceptor())
-    .addNetworkInterceptor(latchway.originGuard())
-    .authenticator(latchway.authenticator())
-    .build()
+val http = latchway.buildOkHttpClient()
 ```
 
-The application interceptor selects the feature, validates the exact gateway
-origin/base path and contract route, rejects caller provider credentials, and
-obtains DPoP-bound Latchway authorization. The network interceptor is the final
-dispatch boundary. It revalidates the destination and route after application
+The helper snapshots an optional caller builder without mutating it, preserves
+its interceptors ahead of Latchway's hooks, installs all three required parts,
+and verifies their final positions before returning an immutable client. A
+pre-existing authenticator is delegated only for non-gateway origins. Partial,
+duplicate, or mixed manual Latchway installation fails with
+`configuration_invalid` before the caller builder changes.
+
+The installed application interceptor selects the feature, validates the exact
+gateway origin/base path and contract route, rejects caller provider
+credentials, and obtains DPoP-bound Latchway authorization. The network
+interceptor is the final dispatch boundary. It revalidates the destination and
+route after application
 hooks and redirects, removes no caller-selected security decision, and creates
 a new proof for each permitted network attempt. The authenticator handles only
 an exact, request-correlated `application/problem+json` response proving a
@@ -64,12 +68,12 @@ even when the same component is opened by multiple client objects. Component
 or family retirement deletes ciphertext, the wrapping key, and the exact
 still-matching DPoP key in a non-cancellable cleanup path.
 
-`interceptor(component)` uses the same request-time seam for a delegated
-component. Only an in-memory native component reference is carried as an
-OkHttp tag; the network interceptor and authenticator use it to create fresh
-component proofs and rotate or clear only that component session. No component
-token, grant, wrapping key, or private signing material crosses into a provider
-request model.
+`buildOkHttpClient(component)` uses the same complete request-time integration
+for a delegated component. Only an in-memory native component reference is
+carried as an OkHttp tag; the installed network interceptor and authenticator
+use it to create fresh component proofs and rotate or clear only that component
+session. No component token, grant, wrapping key, or private signing material
+crosses into a provider request model.
 
 ## Framework fixtures actually exercised
 

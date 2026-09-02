@@ -86,12 +86,17 @@ internal class FrameworkConformanceHarness(
         terminalResponseObserver = { _, _ -> Unit },
     )
 
+    fun okHttpClient(eventListener: EventListener? = null): OkHttpClient =
+        buildLatchwayOkHttpClient(
+            builder = OkHttpClient.Builder().apply {
+                if (eventListener != null) this.eventListener(eventListener)
+            },
+            hooks = hooks,
+            component = null,
+        )
+
     fun okHttpBuilder(eventListener: EventListener? = null): OkHttpClient.Builder =
-        OkHttpClient.Builder()
-            .apply { if (eventListener != null) this.eventListener(eventListener) }
-            .addInterceptor(hooks.interceptor())
-            .addNetworkInterceptor(hooks.originGuard())
-            .authenticator(hooks.authenticator())
+        okHttpClient(eventListener).newBuilder()
 
     override fun close() {
         core.close()

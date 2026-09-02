@@ -18,12 +18,15 @@
   },
   "root_session_claims": {
     "installation_family_id": "fam_01J00000000000000000000000",
-    "client_component_id": "cmp_01J00000000000000000000000",
+    "component_id": "cmp_01J00000000000000000000000",
     "component_definition_id": "ios_main",
     "component_kind": "main_app",
     "component_is_root": true,
-    "granted_features": ["habit_assistant", "journal_analysis"],
-    "trust_source": "direct_attested"
+    "features": ["habit_assistant", "journal_analysis"],
+    "trust": {
+      "source": "direct_attested",
+      "attestation_provider": "app_attest"
+    }
   },
   "provisioned_components": [
     {
@@ -73,14 +76,18 @@
       },
       "expected_session_claims": {
         "installation_family_id": "fam_01J00000000000000000000000",
-        "client_component_id": "cmp_01J00000000000000000000001",
+        "component_id": "cmp_01J00000000000000000000001",
         "component_definition_id": "ios_widget",
         "component_kind": "widget",
         "component_is_root": false,
-        "granted_features": ["habit_assistant"],
-        "trust_source": "delegated_from_attested_root",
-        "parent_component_id": "cmp_01J00000000000000000000000",
-        "delegation_id": "dlg_01J00000000000000000000001"
+        "features": ["habit_assistant"],
+        "trust": {
+          "source": "delegated_from_attested_root",
+          "attestation_provider": "app_attest",
+          "parent_component_id": "cmp_01J00000000000000000000000",
+          "parent_attestation_provider": "app_attest",
+          "delegation_id": "dlg_01J00000000000000000000001"
+        }
       }
     },
     {
@@ -130,14 +137,18 @@
       },
       "expected_session_claims": {
         "installation_family_id": "fam_01J00000000000000000000000",
-        "client_component_id": "cmp_01J00000000000000000000002",
+        "component_id": "cmp_01J00000000000000000000002",
         "component_definition_id": "ios_share",
         "component_kind": "share_extension",
         "component_is_root": false,
-        "granted_features": ["journal_analysis"],
-        "trust_source": "delegated_from_attested_root",
-        "parent_component_id": "cmp_01J00000000000000000000000",
-        "delegation_id": "dlg_01J00000000000000000000002"
+        "features": ["journal_analysis"],
+        "trust": {
+          "source": "delegated_from_attested_root",
+          "attestation_provider": "app_attest",
+          "parent_component_id": "cmp_01J00000000000000000000000",
+          "parent_attestation_provider": "app_attest",
+          "delegation_id": "dlg_01J00000000000000000000002"
+        }
       }
     }
   ],

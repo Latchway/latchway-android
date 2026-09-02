@@ -143,7 +143,7 @@ class CoreDevelopLiveConformanceTest {
             clearer = { _, authorization -> core.clearSessionIfCurrent(authorization) },
             terminalResponseObserver = { _, _ -> Unit },
         )
-        val dataHttp = loopbackClient().newBuilder()
+        val dataBuilder = loopbackClient().newBuilder()
             .eventListener(object : EventListener() {
                 override fun requestHeadersEnd(call: Call, request: Request) {
                     if (request.url.encodedPath != "/v1/responses") return
@@ -164,10 +164,7 @@ class CoreDevelopLiveConformanceTest {
                     )
                 }
             })
-            .addInterceptor(hooks.interceptor())
-            .addNetworkInterceptor(hooks.originGuard())
-            .authenticator(hooks.authenticator())
-            .build()
+        val dataHttp = buildLatchwayOkHttpClient(dataBuilder, hooks, component = null)
 
         try {
             // Establish the SDK-owned session before observing the exact quota

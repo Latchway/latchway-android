@@ -107,6 +107,7 @@ jobs:
           if [[ "$PROFILE" == minimum ]]; then
             arguments+=(
               --tests '*AuthenticatorPolicyTest'
+              --tests '*LatchwayOkHttpClientConfigurationTest'
               --tests '*LangChain4jFrameworkConformanceTest'
               --tests '*OkHttpLatchwayTransportTest'
               --tests '*OpenAiKotlinFrameworkConformanceTest'

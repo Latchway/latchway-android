@@ -175,12 +175,15 @@ class ContractManifestTest {
         assertTrue(typedRoot.isRoot)
 
         val rootClaims = installationFamilyVectors.getJSONObject("root_session_claims")
+        val rootTrust = rootClaims.getJSONObject("trust")
         assertEquals(typedFamily.id, rootClaims.getString("installation_family_id"))
-        assertEquals(typedRoot.id, rootClaims.getString("client_component_id"))
+        assertEquals(typedRoot.id, rootClaims.getString("component_id"))
         assertEquals(typedRoot.definitionId, rootClaims.getString("component_definition_id"))
         assertEquals(typedRoot.kind, rootClaims.getString("component_kind"))
         assertTrue(rootClaims.getBoolean("component_is_root"))
-        assertEquals("direct_attested", rootClaims.getString("trust_source"))
+        assertEquals(typedRoot.grantedFeatures, rootClaims.getJSONArray("features").strings().toSet())
+        assertEquals("direct_attested", rootTrust.getString("source"))
+        assertFalse(rootClaims.has("installation_id"))
 
         val provisioned = installationFamilyVectors.getJSONArray("provisioned_components")
         assertEquals(2, provisioned.length())
@@ -196,16 +199,17 @@ class ContractManifestTest {
             val response = scenario.getJSONObject("response")
             val trust = response.getJSONObject("trust")
             val expectedClaims = scenario.getJSONObject("expected_session_claims")
+            val expectedTrust = expectedClaims.getJSONObject("trust")
             val exchange = scenario.getJSONObject("session_exchange")
             val typedChild = ClientComponentSummary(
-                id = expectedClaims.getString("client_component_id"),
+                id = expectedClaims.getString("component_id"),
                 definitionId = expectedClaims.getString("component_definition_id"),
                 kind = expectedClaims.getString("component_kind"),
                 platform = root.getString("platform"),
                 isRoot = expectedClaims.getBoolean("component_is_root"),
                 status = "active",
                 dpopJkt = typedJwk.thumbprint(),
-                grantedFeatures = expectedClaims.getJSONArray("granted_features").strings().toSet(),
+                grantedFeatures = expectedClaims.getJSONArray("features").strings().toSet(),
             )
             val typedTrust = ComponentTrustSummary(
                 provider = trust.getString("provider"),
@@ -222,7 +226,9 @@ class ContractManifestTest {
             assertEquals(response.getString("component_id"), typedChild.id)
             assertEquals(request.getString("component_definition_id"), typedChild.definitionId)
             assertEquals(requested, response.getJSONArray("granted_features").strings().toSet())
-            assertEquals(expectedClaims.getString("trust_source"), typedTrust.source)
+            assertEquals(expectedTrust.getString("source"), typedTrust.source)
+            assertEquals(typedTrust.parentComponentId, expectedTrust.getString("parent_component_id"))
+            assertFalse(expectedClaims.has("installation_id"))
             assertEquals(typedRoot.id, typedTrust.parentComponentId)
             assertFalse(typedChild.isRoot)
             assertEquals(trust.getString("expires_at"), response.getString("refresh_grant_expires_at"))

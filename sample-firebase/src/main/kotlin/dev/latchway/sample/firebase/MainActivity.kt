@@ -112,14 +112,12 @@ public class MainActivity : Activity() {
             ),
             context = applicationContext,
         )
-        val http = OkHttpClient.Builder()
-            .followRedirects(false)
-            .followSslRedirects(false)
-            .retryOnConnectionFailure(false)
-            .addInterceptor(latchway.interceptor())
-            .addNetworkInterceptor(latchway.originGuard())
-            .authenticator(latchway.authenticator())
-            .build()
+        val http = latchway.buildOkHttpClient(
+            OkHttpClient.Builder()
+                .followRedirects(false)
+                .followSslRedirects(false)
+                .retryOnConnectionFailure(false),
+        )
 
         try {
             stage = GoldenJourneyStage.RESPONSE

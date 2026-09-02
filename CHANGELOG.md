@@ -7,6 +7,13 @@ Versioning once package publication begins.
 
 ## [Unreleased]
 
+### Added
+
+- A validated `buildOkHttpClient()` integration that atomically installs the
+  application interceptor, final network-origin guard, and gateway-scoped
+  authenticator while preserving safe caller configuration and rejecting
+  partial or duplicate manual hook assembly.
+
 ## [1.0.0] - 2026-09-01
 
 ### Added

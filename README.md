@@ -74,12 +74,30 @@ val latchway = LatchwayClient(
     context = applicationContext,
 )
 
-val http = OkHttpClient.Builder()
-    .addInterceptor(latchway.interceptor())
-    .addNetworkInterceptor(latchway.originGuard())
-    .authenticator(latchway.authenticator())
-    .build()
+val http = latchway.buildOkHttpClient()
 ```
+
+`buildOkHttpClient()` is the production integration entry point. It installs
+the application interceptor, final network-origin guard, and bounded
+authenticator as one validated operation. To preserve application-specific
+OkHttp settings, pass a builder; Latchway snapshots it without mutation and
+appends both interceptors in their security-sensitive final positions:
+
+```kotlin
+val http = latchway.buildOkHttpClient(
+    OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .followRedirects(false),
+)
+```
+
+An existing server authenticator is retained for non-gateway origins and can
+never handle a gateway challenge. A builder that already contains any manually
+installed Latchway hook is rejected with `configuration_invalid`, preventing a
+partial or duplicate setup. Treat the returned client as the final configured
+snapshot; do not append network interceptors to a later `newBuilder()` copy.
+The individual `interceptor()`, `originGuard()`, and `authenticator()` factories
+remain deprecated compatibility APIs and should not be assembled in new code.
 
 The compiled [`sample-firebase`](sample-firebase) application is the complete
 Firebase + Play Integrity golden journey. It incrementally consumes a streamed
@@ -115,18 +133,15 @@ framework at the Latchway gateway and use only a conspicuous non-secret
 placeholder when a framework insists on an API-key-shaped value:
 
 ```kotlin
-fun latchwayHttpBuilder() = OkHttpClient.Builder()
-    .addInterceptor(latchway.interceptor())
-    .addNetworkInterceptor(latchway.originGuard())
-    .authenticator(latchway.authenticator())
+val latchwayHttp = latchway.buildOkHttpClient()
 
 val retrofit = Retrofit.Builder()
     .baseUrl("https://gateway.example.com/")
-    .client(latchwayHttpBuilder().build())
+    .client(latchwayHttp)
     .build()
 
 val openAiEngine = io.ktor.client.engine.okhttp.OkHttp.create {
-    preconfigured = latchwayHttpBuilder().build()
+    preconfigured = latchwayHttp
 }
 val openAi = OpenAI(
     OpenAIConfig(
@@ -138,7 +153,7 @@ val openAi = OpenAI(
 )
 
 val langChainHttp = dev.langchain4j.http.client.okhttp.OkHttpClient.builder()
-    .okHttpClientBuilder(latchwayHttpBuilder())
+    .okHttpClientBuilder(latchwayHttp.newBuilder())
 val chat = OpenAiChatModel.builder()
     .baseUrl("https://gateway.example.com/v1")
     .apiKey("latchway-placeholder-not-a-provider-secret")
@@ -152,7 +167,7 @@ val chat = OpenAiChatModel.builder()
 val koogHttp = ai.koog.http.client.KoogHttpClient.fromOkHttpClient(
     clientName = "LatchwayKoog",
     logger = io.github.oshai.kotlinlogging.KotlinLogging.logger { },
-    okHttpClient = latchwayHttpBuilder().build(),
+    okHttpClient = latchwayHttp,
 )
 val koog = ai.koog.prompt.executor.clients.openai.OpenAILLMClient(
     settings = ai.koog.prompt.executor.clients.openai.OpenAIClientSettings(
@@ -214,11 +229,7 @@ val headers = worker.authorize(
     feature = "weekly-summary",
 )
 
-val workerHttp = OkHttpClient.Builder()
-    .addInterceptor(latchway.interceptor(worker))
-    .addNetworkInterceptor(latchway.originGuard())
-    .authenticator(latchway.authenticator())
-    .build()
+val workerHttp = latchway.buildOkHttpClient(worker)
 ```
 
 Provisioning generates a distinct non-exportable Android Keystore P-256 key,
@@ -273,12 +284,12 @@ their key and report replacement-key liveness during terminal revocation.
 The authenticator only handles a bounded set of pre-dispatch Latchway failures,
 permits one nonce/session follow-up, and rejects one-shot or duplex bodies.
 Application streaming responses are not buffered by the SDK.
-Install `originGuard()` as a network interceptor with `interceptor()`. It sees
-every network attempt and blocks DPoP and Latchway headers before OkHttp can
-follow a redirect to another origin. It also catches credentials added after
-authorization by an application interceptor or cookie jar before dispatch;
-final cross-origin responses are never trusted for destructive revocation
-cleanup even if the guard is omitted.
+`buildOkHttpClient()` always installs the origin guard with the application
+interceptor and authenticator. The guard sees every network attempt and blocks
+DPoP and Latchway headers before OkHttp can follow a redirect to another
+origin. It also catches credentials added after authorization by an
+application interceptor or cookie jar before dispatch; final cross-origin
+responses are never trusted for destructive revocation cleanup.
 Canonical HTTP 403 `installation_revoked` responses are observed without
 replaying the request and trigger terminal local cleanup. Contract 1.0.0
 `operation_indeterminate` exceptions retain their required `operationId` for

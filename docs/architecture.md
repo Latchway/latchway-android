@@ -102,10 +102,14 @@ bounded exponential retries.
 ## Transport boundary
 
 Direct authorization and OkHttp integrations preserve existing HTTP and AI
-libraries. The interceptor and authenticator must recognize one-shot and
-non-replayable bodies. A request is retried only when Latchway proves rejection
-before upstream dispatch; uncertain or partially consumed requests are returned
-to the caller without automatic replay.
+libraries. The production OkHttp builder helper atomically installs and
+validates the application interceptor, final network-origin guard, and
+origin-scoped authenticator. It snapshots rather than mutates caller builders,
+rejects partial or duplicate manual installation, and delegates a caller
+authenticator only away from the gateway. The interceptor and authenticator
+must recognize one-shot and non-replayable bodies. A request is retried only
+when Latchway proves rejection before upstream dispatch; uncertain or partially
+consumed requests are returned to the caller without automatic replay.
 
 Control-plane calls use a dedicated OkHttp dispatcher and connection pool.
 Application interceptors, network interceptors, authenticators, cookies, and

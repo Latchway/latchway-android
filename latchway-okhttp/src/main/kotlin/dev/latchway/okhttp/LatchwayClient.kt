@@ -162,9 +162,36 @@ public class LatchwayClient(
         terminalResponseObserver = ::applyTrustedTerminalResponse,
     )
 
+    /**
+     * Builds an immutable OkHttp client with every required Latchway hook.
+     *
+     * The supplied builder is snapshotted and is never mutated. Its existing
+     * interceptors are preserved ahead of Latchway's application interceptor
+     * and final network-origin guard. A custom authenticator is delegated only
+     * for non-gateway origins. Builders that already contain any manual
+     * Latchway hook are rejected so installation cannot be partial or doubled.
+     */
+    @JvmOverloads
+    public fun buildOkHttpClient(
+        builder: OkHttpClient.Builder = OkHttpClient.Builder(),
+    ): OkHttpClient = buildLatchwayOkHttpClient(builder, okHttpHooks, component = null)
+
+    /** Builds the same complete client with one native component identity. */
+    @JvmOverloads
+    public fun buildOkHttpClient(
+        component: LatchwayComponentClient,
+        builder: OkHttpClient.Builder = OkHttpClient.Builder(),
+    ): OkHttpClient = buildLatchwayOkHttpClient(builder, okHttpHooks, component)
+
+    @Deprecated(
+        message = "Manual hook assembly can omit required origin protection; use buildOkHttpClient()",
+    )
     public fun interceptor(): Interceptor = okHttpHooks.interceptor()
 
     /** Framework-transparent request-time authorization with one native component identity. */
+    @Deprecated(
+        message = "Manual hook assembly can omit required origin protection; use buildOkHttpClient(component)",
+    )
     public fun interceptor(component: LatchwayComponentClient): Interceptor =
         okHttpHooks.interceptor(component)
 
@@ -172,8 +199,14 @@ public class LatchwayClient(
      * Install as a network interceptor. It blocks caller provider credentials
      * before gateway dispatch and Latchway credentials on cross-origin redirects.
      */
+    @Deprecated(
+        message = "Manual hook assembly can omit required hooks; use buildOkHttpClient()",
+    )
     public fun originGuard(): Interceptor = okHttpHooks.originGuard()
 
+    @Deprecated(
+        message = "Manual hook assembly can omit required origin protection; use buildOkHttpClient()",
+    )
     public fun authenticator(): Authenticator = okHttpHooks.authenticator()
 
     public suspend fun authorize(request: Request, feature: String): Request =

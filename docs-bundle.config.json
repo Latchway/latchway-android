@@ -6,12 +6,12 @@
   "package": "dev.latchway",
   "documents": [
     {"path": "quickstart/basic-client.kt", "kind": "quickstart", "source": {"file": "sample-basic/src/main/kotlin/dev/latchway/sample/basic/MainActivity.kt", "start_line": 1, "end_line": 39}},
-    {"path": "quickstart/firebase-auth.kt", "kind": "quickstart", "source": {"file": "sample-firebase/src/main/kotlin/dev/latchway/sample/firebase/MainActivity.kt", "start_line": 1, "end_line": 301}},
+    {"path": "quickstart/firebase-auth.kt", "kind": "quickstart", "source": {"file": "sample-firebase/src/main/kotlin/dev/latchway/sample/firebase/MainActivity.kt", "start_line": 1, "end_line": 299}},
     {"path": "frameworks/retrofit.kt", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt", "start_line": 30, "end_line": 104}},
     {"path": "frameworks/openai-kotlin.kt", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/OpenAiKotlinFrameworkConformanceTest.kt", "start_line": 28, "end_line": 56}},
     {"path": "frameworks/langchain4j.kt", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/LangChain4jFrameworkConformanceTest.kt", "start_line": 21, "end_line": 56}},
     {"path": "frameworks/koog.kt", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt", "start_line": 42, "end_line": 91}},
-    {"path": "release-notes.md", "kind": "release_notes", "source": {"file": "CHANGELOG.md", "start_line": 1, "end_line": 115}}
+    {"path": "release-notes.md", "kind": "release_notes", "source": {"file": "CHANGELOG.md", "start_line": 1, "end_line": 122}}
   ],
   "supported_versions": [
     {"name": "dev.latchway:latchway-core", "version": "1.0.0", "source": {"file": "docs/publishing.md", "start_line": 3, "end_line": 36}},
@@ -67,7 +67,7 @@
     {"file": "latchway-core/src/main/kotlin/dev/latchway/core/LatchwayApi.kt", "start_line": 380, "end_line": 423, "pattern": "(?m)^[ \\t]+override (?:(?:suspend|operator|inline|infix|tailrec) )*fun (?P<name>[A-Za-z][A-Za-z0-9_]*)"},
     {"file": "latchway-core/src/main/kotlin/dev/latchway/core/SessionState.kt", "start_line": 82, "end_line": 130, "pattern": "(?m)^[ \\t]+override (?:(?:suspend|operator|inline|infix|tailrec) )*fun (?P<name>[A-Za-z][A-Za-z0-9_]*)"},
     {"file": "latchway-firebase-auth/src/main/kotlin/dev/latchway/firebaseauth/FirebaseIdentityTokenProvider.kt", "start_line": 10, "end_line": 47, "pattern": "(?m)^[ \\t]+override (?:(?:suspend|operator|inline|infix|tailrec) )*fun (?P<name>[A-Za-z][A-Za-z0-9_]*)"},
-    {"file": "latchway-okhttp/src/main/kotlin/dev/latchway/okhttp/LatchwayClient.kt", "start_line": 313, "end_line": 324, "pattern": "(?m)^[ \\t]+override (?:(?:suspend|operator|inline|infix|tailrec) )*fun (?P<name>[A-Za-z][A-Za-z0-9_]*)"},
+    {"file": "latchway-okhttp/src/main/kotlin/dev/latchway/okhttp/LatchwayClient.kt", "start_line": 346, "end_line": 357, "pattern": "(?m)^[ \\t]+override (?:(?:suspend|operator|inline|infix|tailrec) )*fun (?P<name>[A-Za-z][A-Za-z0-9_]*)"},
     {"file": "latchway-okhttp/src/main/kotlin/dev/latchway/okhttp/OkHttpLatchwayTransport.kt", "start_line": 21, "end_line": 40, "pattern": "(?m)^[ \\t]+override (?:(?:suspend|operator|inline|infix|tailrec) )*fun (?P<name>[A-Za-z][A-Za-z0-9_]*)"},
     {"file": "latchway-play-integrity/src/main/kotlin/dev/latchway/playintegrity/PlayIntegrityAttestationProvider.kt", "start_line": 37, "end_line": 100, "pattern": "(?m)^[ \\t]+override (?:(?:suspend|operator|inline|infix|tailrec) )*fun (?P<name>[A-Za-z][A-Za-z0-9_]*)"}
   ],
@@ -76,7 +76,7 @@
   ],
   "examples": [
     {"name": "Basic Android client", "kind": "quickstart", "source": {"file": "sample-basic/src/main/kotlin/dev/latchway/sample/basic/MainActivity.kt", "start_line": 1, "end_line": 39}},
-    {"name": "Firebase and Play Integrity golden journey", "kind": "physical_device", "source": {"file": "sample-firebase/src/main/kotlin/dev/latchway/sample/firebase/MainActivity.kt", "start_line": 1, "end_line": 301}},
+    {"name": "Firebase and Play Integrity golden journey", "kind": "physical_device", "source": {"file": "sample-firebase/src/main/kotlin/dev/latchway/sample/firebase/MainActivity.kt", "start_line": 1, "end_line": 299}},
     {"name": "Retrofit conformance consumer", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt", "start_line": 1, "end_line": 333}},
     {"name": "OpenAI Kotlin conformance consumer", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/OpenAiKotlinFrameworkConformanceTest.kt", "start_line": 1, "end_line": 198}},
     {"name": "LangChain4j conformance consumer", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/LangChain4jFrameworkConformanceTest.kt", "start_line": 1, "end_line": 216}},

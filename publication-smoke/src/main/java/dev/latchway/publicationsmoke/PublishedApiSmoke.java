@@ -21,4 +21,9 @@ public final class PublishedApiSmoke {
             FirebaseAuth.class,
         };
     }
+
+    /** Compile-time proof that the atomic OkHttp helper is available to Java consumers. */
+    public static OkHttpClient buildProtectedClient(LatchwayClient client) {
+        return client.buildOkHttpClient(new OkHttpClient.Builder());
+    }
 }
