@@ -51,11 +51,14 @@ Before running it:
 2. Generate a Publisher Portal user token.
 3. Provision an OpenPGP key whose public key is available from a supported key
    server.
-   Store its uppercase 40-character fingerprint in the repository or
-   organization Actions variable `LATCHWAY_MAVEN_SIGNING_FINGERPRINT`. The release
-   workflow exports only the minimal public half as an attested immutable
-   release asset; private signing material is never written to the repository
-   or release assets.
+   Store the same uppercase 40-character fingerprint as the environment-scoped
+   Actions variable `LATCHWAY_MAVEN_SIGNING_FINGERPRINT` in each of
+   `maven-central-signing`, `maven-central`, and
+   `maven-publication-verification`. Never define
+   `LATCHWAY_MAVEN_SIGNING_FINGERPRINT` at repository or organization scope. The
+   release workflow exports only the minimal public half as an attested
+   immutable release asset; private signing material is never written to the
+   repository or release assets.
 4. Update every source and Gradle version declaration, run the repository test
    suite, and commit the exact release. Do not create or push the matching
    `vVERSION` tag manually: the evidence-gated `.github/workflows/release.yml`

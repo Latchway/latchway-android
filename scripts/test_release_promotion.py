@@ -903,12 +903,20 @@ class ReleaseWorkflowTests(unittest.TestCase):
             "partial or single-job reruns",
             "OIDC token",
             "repository secret",
+            "environment-scoped",
+            "`maven-central-signing`, `maven-central`, and",
+            "`LATCHWAY_MAVEN_SIGNING_FINGERPRINT` at repository or organization scope",
             "exact ten",
             "retained",
         ):
             self.assertIn(marker, documentation)
         self.assertRegex(documentation, r"organization\s+secret visible")
         self.assertRegex(documentation, r"sibling-repository\s+token")
+        self.assertNotIn(
+            "repository or organization Actions variable "
+            "`LATCHWAY_MAVEN_SIGNING_FINGERPRINT`",
+            documentation,
+        )
 
 
 
