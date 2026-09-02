@@ -10,7 +10,7 @@
     {"path": "frameworks/retrofit.kt", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt", "start_line": 30, "end_line": 104}},
     {"path": "frameworks/openai-kotlin.kt", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/OpenAiKotlinFrameworkConformanceTest.kt", "start_line": 28, "end_line": 56}},
     {"path": "frameworks/langchain4j.kt", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/LangChain4jFrameworkConformanceTest.kt", "start_line": 21, "end_line": 56}},
-    {"path": "frameworks/koog.kt", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt", "start_line": 42, "end_line": 91}},
+    {"path": "frameworks/koog.kt", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt", "start_line": 43, "end_line": 92}},
     {"path": "release-notes.md", "kind": "release_notes", "source": {"file": "CHANGELOG.md", "start_line": 1, "end_line": 122}}
   ],
   "supported_versions": [
@@ -78,8 +78,8 @@
     {"name": "Basic Android client", "kind": "quickstart", "source": {"file": "sample-basic/src/main/kotlin/dev/latchway/sample/basic/MainActivity.kt", "start_line": 1, "end_line": 39}},
     {"name": "Firebase and Play Integrity golden journey", "kind": "physical_device", "source": {"file": "sample-firebase/src/main/kotlin/dev/latchway/sample/firebase/MainActivity.kt", "start_line": 1, "end_line": 299}},
     {"name": "Retrofit conformance consumer", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt", "start_line": 1, "end_line": 333}},
-    {"name": "OpenAI Kotlin conformance consumer", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/OpenAiKotlinFrameworkConformanceTest.kt", "start_line": 1, "end_line": 198}},
+    {"name": "OpenAI Kotlin conformance consumer", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/OpenAiKotlinFrameworkConformanceTest.kt", "start_line": 1, "end_line": 242}},
     {"name": "LangChain4j conformance consumer", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/LangChain4jFrameworkConformanceTest.kt", "start_line": 1, "end_line": 216}},
-    {"name": "Koog conformance consumer", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt", "start_line": 1, "end_line": 437}}
+    {"name": "Koog conformance consumer", "kind": "framework", "source": {"file": "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt", "start_line": 1, "end_line": 540}}
   ]
 }

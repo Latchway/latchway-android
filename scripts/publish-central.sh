@@ -12,6 +12,12 @@ if [[ -n "${LATCHWAY_SIGNING_KEY:-}" || -n "${LATCHWAY_SIGNING_PASSWORD:-}" ]]; 
   echo "Private signing material must not be exposed to the Portal publisher" >&2
   exit 64
 fi
+if [[ -n "${LATCHWAY_ALLOW_UNTAGGED_RELEASE_FOR_STAGING:-}" ||
+      -n "${LATCHWAY_CENTRAL_SKIP_LOCAL_GATES:-}" ||
+      -n "${LATCHWAY_CENTRAL_PUBLISH_AFTER_VALIDATION:-}" ]]; then
+  echo "Maven Central publication bypass variables are forbidden" >&2
+  exit 64
+fi
 
 # Copy credentials into non-exported shell variables, then remove the original
 # environment entries before git, Gradle, Python, or unauthenticated curl runs.
@@ -28,7 +34,6 @@ deployment_status=${LATCHWAY_CENTRAL_DEPLOYMENT_STATUS:-}
 portal_bundle=${LATCHWAY_CENTRAL_PORTAL_BUNDLE:-}
 intent_fresh=${LATCHWAY_CENTRAL_INTENT_FRESH:-false}
 stop_after_record=${LATCHWAY_CENTRAL_STOP_AFTER_RECORD:-false}
-publish_after_validation=${LATCHWAY_CENTRAL_PUBLISH_AFTER_VALIDATION:-false}
 status_attempts=${LATCHWAY_CENTRAL_STATUS_ATTEMPTS:-90}
 status_delay=${LATCHWAY_CENTRAL_STATUS_DELAY_SECONDS:-20}
 adoption_attempts=${LATCHWAY_CENTRAL_ADOPTION_ATTEMPTS:-30}
@@ -46,7 +51,7 @@ adoption_delay=${LATCHWAY_CENTRAL_ADOPTION_DELAY_SECONDS:-10}
   echo "Central releases must be staged with recoverable user_managed publication" >&2
   exit 64
 }
-for boolean in "$intent_fresh" "$stop_after_record" "$publish_after_validation"; do
+for boolean in "$intent_fresh" "$stop_after_record"; do
   [[ "$boolean" == true || "$boolean" == false ]] || {
     echo "Central publication boolean settings must be true or false" >&2
     exit 64
@@ -70,9 +75,10 @@ if [[ -n "$(git -C "$repository_root" status --porcelain)" ]]; then
 fi
 release_tag="v$LATCHWAY_RELEASE_VERSION"
 head_commit=$(git -C "$repository_root" rev-parse HEAD)
+tag_type=$(git -C "$repository_root" cat-file -t "refs/tags/$release_tag" 2>/dev/null || true)
 tag_commit=$(git -C "$repository_root" rev-list -n 1 "$release_tag" 2>/dev/null || true)
-if [[ "$tag_commit" != "$head_commit" && "${LATCHWAY_ALLOW_UNTAGGED_RELEASE_FOR_STAGING:-false}" != true ]]; then
-  echo "HEAD must be tagged $release_tag before release staging" >&2
+if [[ "$tag_type" != tag || "$tag_commit" != "$head_commit" ]]; then
+  echo "HEAD must have the exact annotated tag $release_tag before release staging" >&2
   exit 1
 fi
 
@@ -109,6 +115,16 @@ cleanup() { rm -rf "$temporary_root"; }
 trap cleanup EXIT HUP INT TERM
 portal_api=${LATCHWAY_CENTRAL_PORTAL_API_BASE_URL:-https://central.sonatype.com/api/v1/publisher}
 header_file="$temporary_root/portal-header"
+local_release_gates_complete=false
+
+run_local_release_gates() {
+  [[ "$local_release_gates_complete" == false ]] || return 0
+  LATCHWAY_PUBLICATION_TEST_VERSION="$LATCHWAY_RELEASE_VERSION" "$script_directory/verify-local-publication.sh"
+  "$repository_root/gradlew" --no-daemon \
+    -Platchway.central.enabled=false -Platchway.signing.enabled=false \
+    -Platchway.version="$LATCHWAY_RELEASE_VERSION" test assemble lint
+  local_release_gates_complete=true
+}
 
 configure_portal_authentication() {
   [[ -e "$header_file" ]] && return 0
@@ -192,25 +208,9 @@ persist_status() {
   fi
 }
 
-publish_deployment() {
-  local deployment_id=$1 response="$temporary_root/publish-response" code
-  if ! code=$(curl \
-    --proto '=https' --proto-redir '=https' --tlsv1.2 \
-    --connect-timeout 15 --max-time 120 --max-filesize 2097152 \
-    --silent --show-error --request POST --header "@$header_file" \
-    --output "$response" --write-out '%{http_code}' "$portal_api/deployment/$deployment_id"); then
-    echo "Central publish request outcome is uncertain; rerun against the recorded deployment" >&2
-    return 1
-  fi
-  [[ "$code" == 204 ]] || {
-    echo "Central publish request returned HTTP $code; rerun against the recorded deployment" >&2
-    return 1
-  }
-}
-
 wait_for_deployment() {
   local deployment_id=$1 raw_status="$temporary_root/portal-status.json"
-  local normalized_status="$temporary_root/portal-status-evidence.json" state publish_requested=false
+  local normalized_status="$temporary_root/portal-status-evidence.json" state
   for ((attempt = 1; attempt <= status_attempts; attempt++)); do
     query_status_once "$deployment_id" "$raw_status"
     state=$(normalize_status "$raw_status" "$normalized_status")
@@ -221,13 +221,8 @@ wait_for_deployment() {
         return 0
         ;;
       VALIDATED)
-        if [[ "$publish_after_validation" == true && "$publish_requested" == false ]]; then
-          publish_deployment "$deployment_id"
-          publish_requested=true
-        elif [[ "$publish_after_validation" == false ]]; then
-          echo "Maven Central deployment $deployment_id is VALIDATED for explicit publication"
-          return 0
-        fi
+        echo "Maven Central deployment $deployment_id is VALIDATED for protected-workflow publication"
+        return 0
         ;;
       FAILED)
         persist_status "$normalized_status"
@@ -300,16 +295,7 @@ if [[ -e "$deployment_record" ]]; then
   exit 0
 fi
 
-skip_local_gates=${LATCHWAY_CENTRAL_SKIP_LOCAL_GATES:-false}
-if [[ "$skip_local_gates" == false ]]; then
-  LATCHWAY_PUBLICATION_TEST_VERSION="$LATCHWAY_RELEASE_VERSION" "$script_directory/verify-local-publication.sh"
-  "$repository_root/gradlew" --no-daemon \
-    -Platchway.central.enabled=false -Platchway.signing.enabled=false \
-    -Platchway.version="$LATCHWAY_RELEASE_VERSION" test assemble lint
-elif [[ "$skip_local_gates" != true ]]; then
-  echo "LATCHWAY_CENTRAL_SKIP_LOCAL_GATES must be true or false" >&2
-  exit 64
-fi
+run_local_release_gates
 
 deployment_name=$(python3 "$script_directory/central-deployment-record.py" validate-intent \
   --intent "$intent" --field deployment_name)

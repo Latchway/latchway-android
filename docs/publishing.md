@@ -268,10 +268,13 @@ The public `Latchway/latchway` release asset and attestation are read with the
 SDK workflow's read-only `github.token`. Do not configure a sibling-repository
 token for this public-core path.
 
-For a release-candidate rehearsal before a tag exists, an authorized release
-operator may set `LATCHWAY_ALLOW_UNTAGGED_RELEASE_FOR_STAGING=true`. The clean
-worktree, version, signature, and user-managed Portal validation gates still
-apply. Do not use that override for the final release.
+The local Portal helper is staging-only and has no untagged, local-gate, or
+publish-transition bypass. Even a rehearsal against the production Portal
+requires the exact matching annotated tag and runs the full local publication,
+test, assemble, and lint gates before its first upload. It may observe an
+already-published deployment, but only the protected release workflow can send
+the Portal publish request. Use a non-publishing fixture or mock endpoint to
+exercise pre-tag recovery behavior.
 
 ## Failure recovery
 

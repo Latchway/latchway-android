@@ -66,6 +66,7 @@ class CentralPublicationPolicyTests(unittest.TestCase):
         self.list_log = self.root / "list.log"
         self.status_log = self.root / "status.log"
         self.publish_log = self.root / "publish.log"
+        self.local_gate_log = self.root / "local-gate.log"
         self.secret_leak_log = self.root / "secret-leak.log"
         self.write_executable("git", """#!/bin/bash
 set -euo pipefail
@@ -76,7 +77,8 @@ fi
 case "$*" in
   *"status --porcelain") exit 0 ;;
   *"rev-parse HEAD") printf '%040d\n' 0 ;;
-  *"rev-list -n 1 v1.0.0") printf '%040d\n' 0 ;;
+  *"cat-file -t refs/tags/v1.0.0") printf '%s\n' "$FAKE_TAG_TYPE" ;;
+  *"rev-list -n 1 v1.0.0") printf '%s\n' "$FAKE_TAG_COMMIT" ;;
   *) echo "unexpected git command: $*" >&2; exit 2 ;;
 esac
 """)
@@ -127,6 +129,26 @@ case "$url" in
     ;;
 esac
 """)
+        self.write_executable_at(self.scripts / "verify-local-publication.sh", """#!/bin/bash
+set -euo pipefail
+test "$LATCHWAY_PUBLICATION_TEST_VERSION" = 1.0.0
+if [[ -n "${LATCHWAY_MAVEN_CENTRAL_USERNAME:-}${LATCHWAY_MAVEN_CENTRAL_PASSWORD:-}" ]]; then
+  printf 'local verification inherited Portal credentials\n' >>"$FAKE_SECRET_LEAK_LOG"
+  exit 9
+fi
+printf 'verify-local-publication\n' >>"$FAKE_LOCAL_GATE_LOG"
+[[ "$FAKE_LOCAL_GATE_OUTCOME" != verify-failure ]]
+""")
+        self.write_executable_at(self.root / "gradlew", """#!/bin/bash
+set -euo pipefail
+test "$*" = "--no-daemon -Platchway.central.enabled=false -Platchway.signing.enabled=false -Platchway.version=1.0.0 test assemble lint"
+if [[ -n "${LATCHWAY_MAVEN_CENTRAL_USERNAME:-}${LATCHWAY_MAVEN_CENTRAL_PASSWORD:-}" ]]; then
+  printf 'Gradle inherited Portal credentials\n' >>"$FAKE_SECRET_LEAK_LOG"
+  exit 9
+fi
+printf 'gradle-publication-gates\n' >>"$FAKE_LOCAL_GATE_LOG"
+[[ "$FAKE_LOCAL_GATE_OUTCOME" != gradle-failure ]]
+""")
         self.write_executable_at(self.scripts / "verify-central-release.sh", """#!/bin/bash
 set -euo pipefail
 test "$1" = 1.0.0
@@ -159,11 +181,16 @@ printf '{"schema_version":2,"registry":"maven_central","namespace":"dev.latchway
         credentials: bool = False,
         intent_fresh: bool = False,
         stop_after_record: bool = False,
-        publish_after_validation: bool = False,
         list_match_at: int = 999,
         upload_outcome: str = "success",
         status_first_validated: bool = False,
         signing_secrets: bool = False,
+        tag_type: str = "tag",
+        tag_commit: str = COMMIT,
+        local_gate_outcome: str = "pass",
+        legacy_allow_untagged: bool = False,
+        legacy_skip_local_gates: bool = False,
+        legacy_publish_after_validation: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         environment = {
             **os.environ,
@@ -177,8 +204,6 @@ printf '{"schema_version":2,"registry":"maven_central","namespace":"dev.latchway
             "LATCHWAY_CENTRAL_SIGNING_PUBLIC_KEY": str(self.public_key),
             "LATCHWAY_CENTRAL_INTENT_FRESH": str(intent_fresh).lower(),
             "LATCHWAY_CENTRAL_STOP_AFTER_RECORD": str(stop_after_record).lower(),
-            "LATCHWAY_CENTRAL_PUBLISH_AFTER_VALIDATION": str(publish_after_validation).lower(),
-            "LATCHWAY_CENTRAL_SKIP_LOCAL_GATES": "true",
             "LATCHWAY_CENTRAL_STATUS_ATTEMPTS": "2",
             "LATCHWAY_CENTRAL_STATUS_DELAY_SECONDS": "1",
             "LATCHWAY_CENTRAL_ADOPTION_ATTEMPTS": "1",
@@ -192,6 +217,10 @@ printf '{"schema_version":2,"registry":"maven_central","namespace":"dev.latchway
             "FAKE_LIST_MATCH_AT": str(list_match_at),
             "FAKE_UPLOAD_OUTCOME": upload_outcome,
             "FAKE_STATUS_FIRST_VALIDATED": str(status_first_validated).lower(),
+            "FAKE_TAG_TYPE": tag_type,
+            "FAKE_TAG_COMMIT": tag_commit,
+            "FAKE_LOCAL_GATE_OUTCOME": local_gate_outcome,
+            "FAKE_LOCAL_GATE_LOG": str(self.local_gate_log),
             "FAKE_UPLOAD_LOG": str(self.upload_log),
             "FAKE_LIST_LOG": str(self.list_log),
             "FAKE_STATUS_LOG": str(self.status_log),
@@ -201,6 +230,8 @@ printf '{"schema_version":2,"registry":"maven_central","namespace":"dev.latchway
         for name in (
             "LATCHWAY_MAVEN_CENTRAL_USERNAME", "LATCHWAY_MAVEN_CENTRAL_PASSWORD",
             "LATCHWAY_SIGNING_KEY", "LATCHWAY_SIGNING_PASSWORD",
+            "LATCHWAY_ALLOW_UNTAGGED_RELEASE_FOR_STAGING", "LATCHWAY_CENTRAL_SKIP_LOCAL_GATES",
+            "LATCHWAY_CENTRAL_PUBLISH_AFTER_VALIDATION",
         ):
             environment.pop(name, None)
         if credentials:
@@ -210,6 +241,12 @@ printf '{"schema_version":2,"registry":"maven_central","namespace":"dev.latchway
             })
         if signing_secrets:
             environment.update({"LATCHWAY_SIGNING_KEY": "private", "LATCHWAY_SIGNING_PASSWORD": "pass"})
+        if legacy_allow_untagged:
+            environment["LATCHWAY_ALLOW_UNTAGGED_RELEASE_FOR_STAGING"] = "true"
+        if legacy_skip_local_gates:
+            environment["LATCHWAY_CENTRAL_SKIP_LOCAL_GATES"] = "true"
+        if legacy_publish_after_validation:
+            environment["LATCHWAY_CENTRAL_PUBLISH_AFTER_VALIDATION"] = "true"
         return subprocess.run(
             ["/bin/bash", str(self.scripts / SCRIPT.name)], cwd=self.root, env=environment,
             check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -255,16 +292,15 @@ printf '{"schema_version":2,"registry":"maven_central","namespace":"dev.latchway
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.upload_log.read_text(encoding="utf-8"), "upload\n")
 
-    def test_record_is_durable_before_explicit_publish_and_reruns_never_upload(self) -> None:
+    def test_existing_record_stops_at_validated_without_publishing(self) -> None:
         self.create_record()
-        result = self.invoke(
-            credentials=True, publish_after_validation=True, status_first_validated=True,
-        )
+        result = self.invoke(credentials=True, status_first_validated=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.publish_log.read_text(encoding="utf-8"), "publish\n")
-        self.assertEqual(self.status_log.read_text(encoding="utf-8"), "status\nstatus\n")
+        self.assertIn("VALIDATED for protected-workflow publication", result.stdout)
+        self.assertEqual(self.status_log.read_text(encoding="utf-8"), "status\n")
+        self.assertFalse(self.publish_log.exists())
         self.assertFalse(self.upload_log.exists())
-        self.assertEqual(json.loads(self.status_evidence.read_text())["deployment_state"], "PUBLISHED")
+        self.assertFalse(self.status_evidence.exists())
 
     def test_portal_credentials_are_removed_before_unrelated_subprocesses(self) -> None:
         result = self.invoke(credentials=True, intent_fresh=True, stop_after_record=True)
@@ -276,6 +312,61 @@ printf '{"schema_version":2,"registry":"maven_central","namespace":"dev.latchway
         self.assertEqual(result.returncode, 64)
         self.assertIn("must not be exposed", result.stderr)
         self.assertFalse(self.upload_log.exists())
+
+    def test_removed_bypass_variables_are_rejected_before_portal_access(self) -> None:
+        for arguments in (
+            {"legacy_allow_untagged": True},
+            {"legacy_skip_local_gates": True},
+        ):
+            with self.subTest(arguments=arguments):
+                result = self.invoke(credentials=True, **arguments)
+                self.assertEqual(result.returncode, 64)
+                self.assertIn("bypass variables are forbidden", result.stderr)
+                self.assertFalse(self.upload_log.exists())
+                self.assertFalse(self.list_log.exists())
+                self.assertFalse(self.status_log.exists())
+
+    def test_missing_or_lightweight_tag_and_failed_local_gates_cannot_upload(self) -> None:
+        for tag_type, tag_commit in (("", ""), ("commit", COMMIT)):
+            with self.subTest(tag_type=tag_type):
+                rejected_tag = self.invoke(
+                    credentials=True,
+                    tag_type=tag_type,
+                    tag_commit=tag_commit,
+                )
+                self.assertNotEqual(rejected_tag.returncode, 0)
+                self.assertIn("exact annotated tag v1.0.0", rejected_tag.stderr)
+                self.assertFalse(self.upload_log.exists())
+                self.assertFalse(self.list_log.exists())
+
+        for outcome, expected_log in (
+            ("verify-failure", "verify-local-publication\n"),
+            ("gradle-failure", "verify-local-publication\ngradle-publication-gates\n"),
+        ):
+            with self.subTest(outcome=outcome):
+                if self.local_gate_log.exists():
+                    self.local_gate_log.unlink()
+                failed_gate = self.invoke(credentials=True, local_gate_outcome=outcome)
+                self.assertNotEqual(failed_gate.returncode, 0)
+                self.assertEqual(
+                    self.local_gate_log.read_text(encoding="utf-8"),
+                    expected_log,
+                )
+                self.assertFalse(self.upload_log.exists())
+                self.assertFalse(self.list_log.exists())
+
+    def test_forged_local_annotated_tag_cannot_resume_into_publish(self) -> None:
+        self.create_record()
+        result = self.invoke(
+            credentials=True,
+            tag_type="tag",
+            tag_commit=COMMIT,
+            legacy_publish_after_validation=True,
+        )
+        self.assertEqual(result.returncode, 64)
+        self.assertIn("bypass variables are forbidden", result.stderr)
+        self.assertFalse(self.status_log.exists())
+        self.assertFalse(self.publish_log.exists())
 
     def test_unknown_registry_state_and_ambiguous_duplicate_listing_fail_closed(self) -> None:
         result = self.invoke("503", credentials=True, intent_fresh=True)
