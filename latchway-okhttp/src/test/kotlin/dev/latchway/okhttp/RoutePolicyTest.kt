@@ -1,6 +1,8 @@
 package dev.latchway.okhttp
 
 import dev.latchway.core.LatchwayClientPlatform
+import dev.latchway.core.LatchwayErrorCode
+import dev.latchway.core.LatchwayException
 import kotlinx.coroutines.runBlocking
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttp
@@ -12,6 +14,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.atomic.AtomicInteger
 
 class RoutePolicyTest {
     private val gateway = "https://gateway.example.test/base/".toHttpUrl()
@@ -60,6 +63,37 @@ class RoutePolicyTest {
             .post(ByteArray(0).toRequestBody())
             .build()
         assertFalse(isAllowedDataPlaneRequest(gateway, userInfo, "assistant"))
+    }
+
+    @Test
+    fun fwAuth109WrongMethodIsRejectedBeforeCredentialAuthorization() = runBlocking {
+        // FW-AUTH-109
+        val authorizationCalls = AtomicInteger()
+        val hooks = LatchwayOkHttpHooks(
+            configuration = LatchwayConfiguration(
+                baseUrl = gateway,
+                applicationId = "app_01J00000000000000000000000",
+                environment = "production",
+            ),
+            authorizer = { _, _, _, _ ->
+                authorizationCalls.incrementAndGet()
+                error("a rejected method must not reach credential authorization")
+            },
+            refresher = { error("unused") },
+            clearer = { _, _ -> error("unused") },
+            terminalResponseObserver = { _, _ -> error("unused") },
+        )
+        val request = Request.Builder()
+            .url("https://gateway.example.test/base/v1/responses")
+            .get()
+            .build()
+
+        val error = assertThrows(LatchwayException::class.java) {
+            runBlocking { hooks.authorize(null, request, "assistant") }
+        }
+
+        assertEquals(LatchwayErrorCode.TRANSPORT_DESTINATION_NOT_ALLOWED, error.code)
+        assertEquals(0, authorizationCalls.get())
     }
 
     @Test
@@ -122,6 +156,7 @@ class RoutePolicyTest {
                 val request = Request.Builder()
                     .url(server.url(path))
                     .post(body.toRequestBody(json))
+                    .header("X-Application-Correlation", "safe-correlation")
                     .latchwayFeature(FRAMEWORK_FEATURE)
                     .build()
                 client.newCall(request).execute().use { response ->
@@ -131,7 +166,9 @@ class RoutePolicyTest {
                 val recorded = server.takeDataRequest()
                 assertEquals("POST $path HTTP/1.1", recorded.requestLine)
                 assertEquals(body, recorded.body.readUtf8())
+                assertEquals("safe-correlation", recorded.headers["X-Application-Correlation"])
                 assertFrameworkAuthorization(recorded)
+                // FW-REQ-104: allowed application metadata survives every audited route.
             }
         } finally {
             client.dispatcher.cancelAll()

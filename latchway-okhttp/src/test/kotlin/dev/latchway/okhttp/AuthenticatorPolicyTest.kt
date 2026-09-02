@@ -16,6 +16,7 @@ import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.atomic.AtomicReference
 
 class AuthenticatorPolicyTest {
     @Test
@@ -207,6 +208,58 @@ class AuthenticatorPolicyTest {
 
         assertThrows(LatchwayException::class.java) {
             rejectUpstreamCredentials(placeholderAuthorization, authorizationWillBeReplaced = false)
+        }
+    }
+
+    @Test
+    fun fwSec102DuplicateAuthorizationIsReplacedOnceOrRejectedBeforeDispatch() {
+        // FW-SEC-102
+        val server = LoopbackHttpServer()
+        server.enqueue(
+            LoopbackResponse()
+                .setResponseCode(200)
+                .addHeader("Content-Type", "application/json")
+                .setBody("{\"accepted\":true}"),
+        )
+        server.start()
+        val harness = FrameworkConformanceHarness(server)
+        val authorizationAtDispatch = AtomicReference<List<String>>()
+        val client = harness.okHttpBuilder()
+            .addNetworkInterceptor { chain ->
+                authorizationAtDispatch.set(chain.request().headers.values("Authorization"))
+                chain.proceed(chain.request())
+            }
+            .build()
+        val duplicate = Request.Builder()
+            .url(server.url("/v1/responses"))
+            .post(PolicyBody())
+            .latchwayFeature(FRAMEWORK_FEATURE)
+            .addHeader("Authorization", "Bearer first-provider-secret")
+            .addHeader("Authorization", "Bearer second-provider-secret")
+            .build()
+
+        try {
+            client.newCall(duplicate).execute().use { response ->
+                assertTrue(response.isSuccessful)
+            }
+            val values = checkNotNull(authorizationAtDispatch.get())
+            assertEquals(1, values.size)
+            assertTrue(values.single().startsWith("DPoP "))
+            assertFalse(values.single().contains("first-provider-secret"))
+            assertFalse(values.single().contains("second-provider-secret"))
+
+            val error = assertThrows(LatchwayException::class.java) {
+                rejectUpstreamCredentials(duplicate, authorizationWillBeReplaced = false)
+            }
+            assertEquals(LatchwayErrorCode.REQUEST_INVALID, error.code)
+            assertFalse(error.message.orEmpty().contains("first-provider-secret"))
+            assertFalse(error.message.orEmpty().contains("second-provider-secret"))
+        } finally {
+            client.dispatcher.cancelAll()
+            client.connectionPool.evictAll()
+            client.dispatcher.executorService.shutdown()
+            harness.close()
+            server.shutdown()
         }
     }
 

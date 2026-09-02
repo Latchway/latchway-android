@@ -12,6 +12,9 @@ concurrency:
   group: android-framework-compatibility-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  FRAMEWORK_CORE_COMMIT: d4693ee36bf8a018a027fb75e5e2ac2fb6b58d50
+
 jobs:
   compatibility:
     name: ${{ matrix.profile }} framework profile
@@ -26,19 +29,11 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      - name: Resolve the locked core source
-        id: core
-        shell: bash
-        run: |
-          set -euo pipefail
-          commit=$(awk '$1 == "core_commit:" {print $2}' contract.lock)
-          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
-          printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
-      - name: Check out the locked canonical registry and case validator
+      - name: Check out the canonical framework conformance checkpoint
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: Latchway/latchway
-          ref: ${{ steps.core.outputs.commit }}
+          ref: ${{ env.FRAMEWORK_CORE_COMMIT }}
           path: _core
           persist-credentials: false
       - name: Validate the complete Android registry report

@@ -86,10 +86,14 @@ internal class FrameworkConformanceHarness(
         terminalResponseObserver = { _, _ -> Unit },
     )
 
-    fun okHttpClient(eventListener: EventListener? = null): OkHttpClient =
+    fun okHttpClient(
+        eventListener: EventListener? = null,
+        configureBaseBuilder: OkHttpClient.Builder.() -> Unit = {},
+    ): OkHttpClient =
         buildLatchwayOkHttpClient(
             builder = OkHttpClient.Builder().apply {
                 if (eventListener != null) this.eventListener(eventListener)
+                configureBaseBuilder()
             },
             hooks = hooks,
             component = null,

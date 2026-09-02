@@ -35,6 +35,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration.Companion.milliseconds
 
 /** Exact Koog 1.1.1 compatibility spike through its public preconfigured-OkHttp seam. */
@@ -85,6 +86,105 @@ class KoogFrameworkConformanceTest {
                 .getJSONObject("function").getString("name"))
             assertTrue(body.getJSONObject("response_format").toString().contains("structured-output"))
             assertFalse(body.toString().contains(PROVIDER_PLACEHOLDER))
+        } finally {
+            close(fixture, harness, server)
+        }
+    }
+
+    @Test
+    fun fwReq104KoogPreservesAllowedCustomHeaderThroughLatchwayPreparation() = runBlocking {
+        val server = LoopbackHttpServer()
+        server.enqueue(
+            LoopbackResponse()
+                .setResponseCode(200)
+                .addHeader("Content-Type", "application/json")
+                .setBody(CHAT_COMPLETION),
+        )
+        server.start()
+        val harness = FrameworkConformanceHarness(
+            server,
+            frameworkIntegration = LatchwayFrameworkIntegration.KOOG,
+        )
+        val fixture = koog(
+            server = server,
+            harness = harness,
+            configureBaseBuilder = {
+                addInterceptor { chain ->
+                    chain.proceed(
+                        chain.request().newBuilder()
+                            .header("X-Application-Correlation", "koog-safe-correlation")
+                            .build(),
+                    )
+                }
+            },
+        )
+
+        try {
+            val answer = fixture.client.execute(prompt(), OpenAIModels.Chat.GPT4o, emptyList())
+            val recorded = server.takeDataRequest()
+
+            assertEquals("fixture accepted", answer.textContent())
+            assertEquals("koog-safe-correlation", recorded.headers["X-Application-Correlation"])
+            assertFrameworkAuthorization(recorded, LatchwayFrameworkIntegration.KOOG)
+        } finally {
+            close(fixture, harness, server)
+        }
+    }
+
+    @Test
+    fun koogDuplicateAuthorizationIsReplacedExactlyOnceAtNetworkDispatch() = runBlocking {
+        // FW-SEC-102
+        val server = LoopbackHttpServer()
+        server.enqueue(
+            LoopbackResponse()
+                .setResponseCode(200)
+                .addHeader("Content-Type", "application/json")
+                .setBody(CHAT_COMPLETION),
+        )
+        server.start()
+        val harness = FrameworkConformanceHarness(
+            server,
+            frameworkIntegration = LatchwayFrameworkIntegration.KOOG,
+        )
+        val authorizationAfterAdapter = AtomicReference<List<String>>()
+        val authorizationAtDispatch = AtomicReference<List<String>>()
+        val fixture = koog(server, harness) {
+            // This interceptor is deliberately appended after the Latchway
+            // application interceptor. It models a Koog/application hook that
+            // introduces conflicting caller credentials after initial signing.
+            addInterceptor { chain ->
+                val duplicated = chain.request().newBuilder()
+                    .addHeader("Authorization", "Bearer first-koog-caller-secret")
+                    .addHeader("Authorization", "Bearer second-koog-caller-secret")
+                    .build()
+                authorizationAfterAdapter.set(duplicated.headers.values("Authorization"))
+                chain.proceed(duplicated)
+            }
+            // The production origin guard is already the first network
+            // interceptor. This appended observer therefore sees the exact
+            // request that the network will dispatch.
+            addNetworkInterceptor { chain ->
+                authorizationAtDispatch.set(chain.request().headers.values("Authorization"))
+                chain.proceed(chain.request())
+            }
+        }
+
+        try {
+            val answer = fixture.client.execute(prompt(), OpenAIModels.Chat.GPT4o, emptyList())
+            val recorded = server.takeDataRequest()
+            val duplicatedValues = checkNotNull(authorizationAfterAdapter.get())
+            val values = checkNotNull(authorizationAtDispatch.get())
+
+            assertEquals("fixture accepted", answer.textContent())
+            assertEquals(3, duplicatedValues.size)
+            assertTrue(duplicatedValues.any { it.contains("first-koog-caller-secret") })
+            assertTrue(duplicatedValues.any { it.contains("second-koog-caller-secret") })
+            assertEquals(1, values.size)
+            assertTrue(values.single().startsWith("DPoP "))
+            assertFalse(values.single().contains("first-koog-caller-secret"))
+            assertFalse(values.single().contains("second-koog-caller-secret"))
+            assertEquals(values.single(), recorded.headers["Authorization"])
+            assertFrameworkAuthorization(recorded, LatchwayFrameworkIntegration.KOOG)
         } finally {
             close(fixture, harness, server)
         }
@@ -346,9 +446,12 @@ class KoogFrameworkConformanceTest {
         harness: FrameworkConformanceHarness,
         eventListener: EventListener? = null,
         callTimeoutMillis: Long? = null,
+        configureBaseBuilder: OkHttpClient.Builder.() -> Unit = {},
+        configureBuilder: OkHttpClient.Builder.() -> Unit = {},
     ): KoogFixture {
-        val builder = harness.okHttpBuilder(eventListener)
+        val builder = harness.okHttpClient(eventListener, configureBaseBuilder).newBuilder()
         if (callTimeoutMillis != null) builder.callTimeout(callTimeoutMillis, TimeUnit.MILLISECONDS)
+        builder.configureBuilder()
         val http = builder.build()
         val koogHttp = KoogHttpClient.fromOkHttpClient(
             clientName = "LatchwayKoogConformance",

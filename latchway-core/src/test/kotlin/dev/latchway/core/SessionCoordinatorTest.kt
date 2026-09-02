@@ -132,6 +132,63 @@ class SessionCoordinatorTest {
     }
 
     @Test
+    fun fwAuth104RefreshRejectionReauthenticatesExternalIdentityBeforeAReplacementSession() = runBlocking {
+        // FW-AUTH-104
+        val state = MemoryStateStore(
+            snapshot(
+                accessToken = "a".repeat(64),
+                refreshToken = "r".repeat(32),
+                accessExpiresAt = now - 1,
+                refreshExpiresAt = now + 3_600,
+            ),
+        )
+        val requests = mutableListOf<LatchwayTransportRequest>()
+        val responses = ArrayDeque(
+            listOf(
+                response(401, problem("identity_reauthentication_required")),
+                response(201, challenge()),
+                response(201, grant("b".repeat(64), "s".repeat(32))),
+            ),
+        )
+        val identityCalls = AtomicInteger()
+        val client = client(
+            stateStore = state,
+            transport = LatchwayTransport { request ->
+                requests += request
+                responses.removeFirst()
+            },
+            identityProvider = IdentityTokenProvider {
+                identityCalls.incrementAndGet()
+                "fresh-external-identity-token"
+            },
+        )
+
+        val authorization = client.authorize(
+            "POST",
+            URI("https://gateway.example.test/v1/responses"),
+            "assistant",
+        )
+
+        assertEquals(
+            listOf(
+                "/client/v1/sessions/refresh",
+                "/client/v1/session-challenges",
+                "/client/v1/sessions",
+            ),
+            requests.map { it.uri.path },
+        )
+        assertEquals(1, identityCalls.get())
+        assertTrue(
+            requests[1].body?.toString(StandardCharsets.UTF_8)
+                .orEmpty()
+                .contains("fresh-external-identity-token"),
+        )
+        assertEquals("b".repeat(64), state.load()?.accessToken?.reveal())
+        assertTrue(authorization.authorizationHeader().startsWith("DPoP "))
+        client.close()
+    }
+
+    @Test
     fun refreshIsSingleFlightAcrossSeparateClientsSharingOneInstallation() = runBlocking {
         val sharedSigner = FakeSigner()
         val state = MemoryStateStore(
@@ -324,6 +381,71 @@ class SessionCoordinatorTest {
         }
         assertEquals(LatchwayErrorCode.INSTALLATION_REVOKED, reuseError.code)
         assertEquals(1, calls.get())
+        client.close()
+    }
+
+    @Test
+    fun fwAuth105InstallationFamilyRevocationRetiresStateKeyAndClientLocally() = runBlocking {
+        // FW-AUTH-105
+        val state = MemoryStateStore(
+            snapshot("a".repeat(64), "r".repeat(32), now + 600, now + 3_600),
+        )
+        val calls = AtomicInteger()
+        val client = client(
+            stateStore = state,
+            transport = LatchwayTransport {
+                calls.incrementAndGet()
+                response(403, problem("installation_family_revoked", status = 403))
+            },
+        )
+
+        val familyError = assertThrows(LatchwayException::class.java) {
+            runBlocking { client.quota("assistant") }
+        }
+
+        assertEquals(LatchwayErrorCode.INSTALLATION_FAMILY_REVOKED, familyError.code)
+        assertNull(state.load())
+        assertEquals(1, signer.resetCount)
+        val reuseError = assertThrows(LatchwayException::class.java) {
+            runBlocking { client.refresh() }
+        }
+        assertEquals(LatchwayErrorCode.INSTALLATION_REVOKED, reuseError.code)
+        assertEquals(1, calls.get())
+        client.close()
+    }
+
+    @Test
+    fun fwAuth108WrongDpopUriIsRejectedBeforeIdentityOrTransportDispatch() = runBlocking {
+        // FW-AUTH-108
+        val identityCalls = AtomicInteger()
+        val transportCalls = AtomicInteger()
+        val client = client(
+            stateStore = MemoryStateStore(
+                snapshot("a".repeat(64), "r".repeat(32), now + 600, now + 3_600),
+            ),
+            transport = LatchwayTransport {
+                transportCalls.incrementAndGet()
+                error("a rejected URI must not reach transport")
+            },
+            identityProvider = IdentityTokenProvider {
+                identityCalls.incrementAndGet()
+                "i".repeat(32)
+            },
+        )
+
+        val error = assertThrows(LatchwayException::class.java) {
+            runBlocking {
+                client.authorize(
+                    "POST",
+                    URI("https://attacker.invalid/v1/responses"),
+                    "assistant",
+                )
+            }
+        }
+
+        assertEquals(LatchwayErrorCode.TRANSPORT_DESTINATION_NOT_ALLOWED, error.code)
+        assertEquals(0, identityCalls.get())
+        assertEquals(0, transportCalls.get())
         client.close()
     }
 

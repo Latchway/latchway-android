@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "cases": {
+    "FW-AUTH-101": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt#retrofitUsesTheProductionHooksAndReplacesItsPlaceholderAuthorization",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogPreservesChatToolsAndStructuredOutputThroughLatchwayOkHttp",
+      "latchway-core/src/test/kotlin/dev/latchway/core/SessionCoordinatorTest.kt#initialSessionExchangeIsSingleFlightAcrossConcurrentCallers"
+    ],
+    "FW-AUTH-102": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt#retrofitUsesTheProductionHooksAndReplacesItsPlaceholderAuthorization",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogPreservesChatToolsAndStructuredOutputThroughLatchwayOkHttp",
+      "latchway-core/src/test/kotlin/dev/latchway/core/DpopContractTest.kt#generatedProtectedProofUsesCanonicalHtuAthAndNonce"
+    ],
+    "FW-AUTH-103": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt#retrofitReplayableBodyUsesOnlyTheCorrelatedPreDispatchRefresh",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogReplayableRequestUsesOnlyTheCorrelatedPreDispatchRefresh",
+      "latchway-core/src/test/kotlin/dev/latchway/core/SessionCoordinatorTest.kt#refreshIsSingleFlightAndRotatesStoredCredentials"
+    ],
+    "FW-AUTH-106": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt#retrofitUsesTheProductionHooksAndReplacesItsPlaceholderAuthorization",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogPreservesChatToolsAndStructuredOutputThroughLatchwayOkHttp",
+      "latchway-core/src/test/kotlin/dev/latchway/core/SessionCoordinatorTest.kt#delegatedComponentProvisioningUsesIndependentKeySessionAndRevocation"
+    ],
+    "FW-REQ-101": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#defaultOkHttpIntegrationPreservesEveryRegisteredAiRouteAndStructuredBody",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogPreservesChatToolsAndStructuredOutputThroughLatchwayOkHttp"
+    ],
+    "FW-REQ-102": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#publishedOkHttpFrameworkDeclarationMatchesThePinnedRuntime",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogPreservesChatToolsAndStructuredOutputThroughLatchwayOkHttp"
+    ],
+    "FW-REQ-103": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt#retrofitUsesTheProductionHooksAndReplacesItsPlaceholderAuthorization",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogPreservesChatToolsAndStructuredOutputThroughLatchwayOkHttp"
+    ],
+    "FW-REQ-105": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/OpenAiKotlinFrameworkConformanceTest.kt#aallamStreamingDeliversIncrementallyAndCoroutineCancellationCancelsOkHttp",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogCoroutineCancellationCancelsTheUnderlyingOkHttpEventSource"
+    ],
+    "FW-REQ-106": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogTimeoutPropagatesWithoutLeakingCredentials"
+    ],
+    "FW-REQ-107": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#defaultOkHttpIntegrationPreservesEveryRegisteredAiRouteAndStructuredBody",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogPreservesChatToolsAndStructuredOutputThroughLatchwayOkHttp"
+    ],
+    "FW-REQ-108": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/OpenAiKotlinFrameworkConformanceTest.kt#aallamStreamingDeliversIncrementallyAndCoroutineCancellationCancelsOkHttp",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogStreamingIsIncrementalAndPreservesFinalUsage"
+    ],
+    "FW-REQ-109": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/OpenAiKotlinFrameworkConformanceTest.kt#fwReq109AallamStreamReturnsTerminalUsageThroughConfiguredLatchwayOkHttpEngine",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogStreamingIsIncrementalAndPreservesFinalUsage"
+    ],
+    "FW-BEH-101": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#defaultOkHttpIntegrationPreservesEveryRegisteredAiRouteAndStructuredBody",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogPreservesChatToolsAndStructuredOutputThroughLatchwayOkHttp"
+    ],
+    "FW-BEH-102": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#defaultOkHttpIntegrationPreservesEveryRegisteredAiRouteAndStructuredBody",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogPreservesChatToolsAndStructuredOutputThroughLatchwayOkHttp"
+    ],
+    "FW-BEH-103": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#publishedOkHttpFrameworkDeclarationMatchesThePinnedRuntime",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogPreservesChatToolsAndStructuredOutputThroughLatchwayOkHttp"
+    ],
+    "FW-BEH-104": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt#retrofitReplayableBodyUsesOnlyTheCorrelatedPreDispatchRefresh",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogNativeRetryCreatesANewDpopProofForEveryFrameworkAttempt"
+    ],
+    "FW-BEH-105": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt#retrofitPreservesLatchwayProblemForCallerOwnedErrorMappingWithoutRetries",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogQuotaErrorPreservesTheLatchwayRequestIdAndNoCredentialMaterial"
+    ],
+    "FW-BEH-106": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/OpenAiKotlinFrameworkConformanceTest.kt#aallamQuotaFailureMapsToItsSafeApiExceptionWithoutFrameworkRetries",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogQuotaErrorPreservesTheLatchwayRequestIdAndNoCredentialMaterial"
+    ],
+    "FW-SEC-101": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/OkHttpLatchwayTransportTest.kt#originGuardBlocksLatchwayHeadersBeforeACrossOriginRedirectIsDispatched"
+    ],
+    "FW-SEC-103": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/OkHttpLatchwayTransportTest.kt#originGuardBlocksLatchwayHeadersBeforeACrossOriginRedirectIsDispatched",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/LatchwayOkHttpClientConfigurationTest.kt#completeBuilderStillBlocksCredentialsBeforeCrossOriginRedirectDispatch"
+    ],
+    "FW-SEC-104": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt#retrofitUsesTheProductionHooksAndReplacesItsPlaceholderAuthorization",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogPreservesChatToolsAndStructuredOutputThroughLatchwayOkHttp"
+    ],
+    "FW-AUTH-104": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt#retrofitReplayableBodyUsesOnlyTheCorrelatedPreDispatchRefresh",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogReplayableRequestUsesOnlyTheCorrelatedPreDispatchRefresh",
+      "latchway-core/src/test/kotlin/dev/latchway/core/SessionCoordinatorTest.kt#fwAuth104RefreshRejectionReauthenticatesExternalIdentityBeforeAReplacementSession"
+    ],
+    "FW-AUTH-105": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt#retrofitUsesTheProductionHooksAndReplacesItsPlaceholderAuthorization",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogPreservesChatToolsAndStructuredOutputThroughLatchwayOkHttp",
+      "latchway-core/src/test/kotlin/dev/latchway/core/SessionCoordinatorTest.kt#fwAuth105InstallationFamilyRevocationRetiresStateKeyAndClientLocally"
+    ],
+    "FW-AUTH-108": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt#retrofitUsesTheProductionHooksAndReplacesItsPlaceholderAuthorization",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogPreservesChatToolsAndStructuredOutputThroughLatchwayOkHttp",
+      "latchway-core/src/test/kotlin/dev/latchway/core/SessionCoordinatorTest.kt#fwAuth108WrongDpopUriIsRejectedBeforeIdentityOrTransportDispatch"
+    ],
+    "FW-BEH-107": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt#retrofitProviderCredentialHeadersFailBeforeDispatchAndRemainRedacted",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogQuotaErrorPreservesTheLatchwayRequestIdAndNoCredentialMaterial",
+      "latchway-core/src/test/kotlin/dev/latchway/core/DpopContractTest.kt#fwBeh107ProductionDiagnosticSurfacesRemainCredentialFreeWhenLogged"
+    ],
+    "FW-AUTH-109": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt#retrofitUsesTheProductionHooksAndReplacesItsPlaceholderAuthorization",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogPreservesChatToolsAndStructuredOutputThroughLatchwayOkHttp",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#fwAuth109WrongMethodIsRejectedBeforeCredentialAuthorization"
+    ],
+    "FW-SEC-102": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt#retrofitUsesTheProductionHooksAndReplacesItsPlaceholderAuthorization",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogDuplicateAuthorizationIsReplacedExactlyOnceAtNetworkDispatch",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/AuthenticatorPolicyTest.kt#fwSec102DuplicateAuthorizationIsReplacedOnceOrRejectedBeforeDispatch"
+    ],
+    "FW-REQ-104": [
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#FW-REQ-104",
+      "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#fwReq104KoogPreservesAllowedCustomHeaderThroughLatchwayPreparation"
+    ]
+  }
+}

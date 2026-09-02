@@ -1,6 +1,7 @@
 package dev.latchway.okhttp
 
 import com.aallam.openai.api.chat.ChatCompletionRequest
+import com.aallam.openai.api.chat.StreamOptions
 import com.aallam.openai.api.chat.chatCompletionRequest
 import com.aallam.openai.api.exception.RateLimitException
 import com.aallam.openai.api.model.ModelId
@@ -14,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import okhttp3.EventListener
 import okhttp3.OkHttpClient
@@ -101,6 +103,36 @@ class OpenAiKotlinFrameworkConformanceTest {
     }
 
     @Test
+    fun fwReq109AallamStreamReturnsTerminalUsageThroughConfiguredLatchwayOkHttpEngine() = runBlocking {
+        val server = LoopbackHttpServer()
+        server.enqueue(
+            LoopbackResponse()
+                .setResponseCode(200)
+                .addHeader("Content-Type", "text/event-stream")
+                .setBody(CHAT_STREAM_WITH_USAGE),
+        )
+        server.start()
+        val harness = FrameworkConformanceHarness(server)
+        val http = harness.okHttpBuilder().build()
+        val openAI = openAI(server, http)
+
+        try {
+            val chunks = openAI.chatCompletions(request(includeUsage = true)).toList()
+            val recorded = server.takeDataRequest()
+            val usage = checkNotNull(chunks.last().usage)
+
+            assertEquals("chatcmpl_stream", chunks.first().id)
+            assertEquals(7, usage.promptTokens)
+            assertEquals(2, usage.completionTokens)
+            assertEquals(9, usage.totalTokens)
+            assertFrameworkAuthorization(recorded)
+            assertTrue(recorded.body.readUtf8().contains("\"include_usage\":true"))
+        } finally {
+            close(openAI, http, harness, server)
+        }
+    }
+
+    @Test
     fun aallamQuotaFailureMapsToItsSafeApiExceptionWithoutFrameworkRetries() {
         val server = LoopbackHttpServer()
         server.enqueue(
@@ -153,10 +185,13 @@ class OpenAiKotlinFrameworkConformanceTest {
         )
     }
 
-    private fun request(): ChatCompletionRequest = chatCompletionRequest {
+    private fun request(includeUsage: Boolean = false): ChatCompletionRequest = chatCompletionRequest {
         model = ModelId("framework-fixture")
         messages {
             user { content = "Say fixture" }
+        }
+        if (includeUsage) {
+            streamOptions = StreamOptions(includeUsage = true)
         }
     }
 
@@ -192,6 +227,15 @@ class OpenAiKotlinFrameworkConformanceTest {
 
         val CHAT_STREAM_FIRST = """
             data: {"id":"chatcmpl_stream","object":"chat.completion.chunk","created":1700000000,"model":"framework-fixture","choices":[{"index":0,"delta":{"role":"assistant","content":"first"},"finish_reason":null}]}
+
+        """.trimIndent() + "\n"
+
+        val CHAT_STREAM_WITH_USAGE = """
+            data: {"id":"chatcmpl_stream","object":"chat.completion.chunk","created":1700000000,"model":"framework-fixture","choices":[{"index":0,"delta":{"role":"assistant","content":"first"},"finish_reason":null}]}
+
+            data: {"id":"chatcmpl_stream","object":"chat.completion.chunk","created":1700000000,"model":"framework-fixture","choices":[],"usage":{"prompt_tokens":7,"completion_tokens":2,"total_tokens":9}}
+
+            data: [DONE]
 
         """.trimIndent() + "\n"
     }

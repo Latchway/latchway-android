@@ -1,44 +1,211 @@
 {
-  "schema_version": 1,
-  "manifest_sha256": "32cd1df9365e04cc684fa63ac0798feec37f44ef1a95898f91935108bb58ef9a",
+  "schema_version": 2,
+  "manifest_sha256": "24d09b398d0ae1afd265ff77683847874110636174a4a313ebe62648cb33bbed",
   "repository": "latchway-android",
   "integrations": [
     {
       "id": "android-okhttp",
       "support": "experimental",
       "pass": {
-        "FW-AUTH-001": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#publishedOkHttpFrameworkDeclarationMatchesThePinnedRuntime"],
-        "FW-REQ-001": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#defaultOkHttpIntegrationPreservesEveryRegisteredAiRouteAndStructuredBody"],
-        "FW-REQ-002": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#defaultOkHttpIntegrationPreservesEveryRegisteredAiRouteAndStructuredBody"],
-        "FW-REQ-003": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#defaultOkHttpIntegrationPreservesEveryRegisteredAiRouteAndStructuredBody"],
-        "FW-REQ-004": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#defaultOkHttpIntegrationPreservesEveryRegisteredAiRouteAndStructuredBody"],
-        "FW-REQ-005": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/OpenAiKotlinFrameworkConformanceTest.kt#aallamStreamingDeliversIncrementallyAndCoroutineCancellationCancelsOkHttp"],
-        "FW-REQ-006": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/OpenAiKotlinFrameworkConformanceTest.kt#aallamStreamingDeliversIncrementallyAndCoroutineCancellationCancelsOkHttp"],
-        "FW-BEH-001": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#defaultOkHttpIntegrationPreservesEveryRegisteredAiRouteAndStructuredBody"],
-        "FW-BEH-002": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#defaultOkHttpIntegrationPreservesEveryRegisteredAiRouteAndStructuredBody"],
-        "FW-BEH-003": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/OpenAiKotlinFrameworkConformanceTest.kt#aallamQuotaFailureMapsToItsSafeApiExceptionWithoutFrameworkRetries"],
-        "FW-BEH-004": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt#retrofitPreservesLatchwayProblemForCallerOwnedErrorMappingWithoutRetries"],
-        "FW-BEH-006": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt#retrofitReplayableBodyUsesOnlyTheCorrelatedPreDispatchRefresh"],
-        "FW-SEC-001": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/FrameworkConformanceHarness.kt#assertFrameworkAuthorization"],
-        "FW-SEC-002": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#dataPlaneRouteAuthorizationIsExactAndFeatureBound"],
-        "FW-SEC-003": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt#retrofitProviderCredentialHeadersFailBeforeDispatchAndRemainRedacted"]
+        "FW-AUTH-001": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#publishedOkHttpFrameworkDeclarationMatchesThePinnedRuntime"
+        ],
+        "FW-REQ-001": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#defaultOkHttpIntegrationPreservesEveryRegisteredAiRouteAndStructuredBody"
+        ],
+        "FW-REQ-002": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#defaultOkHttpIntegrationPreservesEveryRegisteredAiRouteAndStructuredBody"
+        ],
+        "FW-REQ-003": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#defaultOkHttpIntegrationPreservesEveryRegisteredAiRouteAndStructuredBody"
+        ],
+        "FW-REQ-004": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#defaultOkHttpIntegrationPreservesEveryRegisteredAiRouteAndStructuredBody"
+        ],
+        "FW-REQ-005": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/OpenAiKotlinFrameworkConformanceTest.kt#aallamStreamingDeliversIncrementallyAndCoroutineCancellationCancelsOkHttp"
+        ],
+        "FW-REQ-006": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/OpenAiKotlinFrameworkConformanceTest.kt#aallamStreamingDeliversIncrementallyAndCoroutineCancellationCancelsOkHttp"
+        ],
+        "FW-BEH-001": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#defaultOkHttpIntegrationPreservesEveryRegisteredAiRouteAndStructuredBody"
+        ],
+        "FW-BEH-002": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#defaultOkHttpIntegrationPreservesEveryRegisteredAiRouteAndStructuredBody"
+        ],
+        "FW-BEH-003": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/OpenAiKotlinFrameworkConformanceTest.kt#aallamQuotaFailureMapsToItsSafeApiExceptionWithoutFrameworkRetries"
+        ],
+        "FW-BEH-004": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt#retrofitPreservesLatchwayProblemForCallerOwnedErrorMappingWithoutRetries"
+        ],
+        "FW-BEH-006": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt#retrofitReplayableBodyUsesOnlyTheCorrelatedPreDispatchRefresh"
+        ],
+        "FW-SEC-001": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/FrameworkConformanceHarness.kt#assertFrameworkAuthorization"
+        ],
+        "FW-SEC-002": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#dataPlaneRouteAuthorizationIsExactAndFeatureBound"
+        ],
+        "FW-SEC-003": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RetrofitFrameworkConformanceTest.kt#retrofitProviderCredentialHeadersFailBeforeDispatchAndRemainRedacted"
+        ],
+        "FW-AUTH-101": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-101"
+        ],
+        "FW-AUTH-102": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-102"
+        ],
+        "FW-AUTH-103": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-103"
+        ],
+        "FW-AUTH-106": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-106"
+        ],
+        "FW-REQ-101": [
+          "Conformance/common-framework-evidence.json#FW-REQ-101"
+        ],
+        "FW-REQ-102": [
+          "Conformance/common-framework-evidence.json#FW-REQ-102"
+        ],
+        "FW-REQ-103": [
+          "Conformance/common-framework-evidence.json#FW-REQ-103"
+        ],
+        "FW-REQ-105": [
+          "Conformance/common-framework-evidence.json#FW-REQ-105"
+        ],
+        "FW-REQ-107": [
+          "Conformance/common-framework-evidence.json#FW-REQ-107"
+        ],
+        "FW-REQ-108": [
+          "Conformance/common-framework-evidence.json#FW-REQ-108"
+        ],
+        "FW-BEH-101": [
+          "Conformance/common-framework-evidence.json#FW-BEH-101"
+        ],
+        "FW-BEH-102": [
+          "Conformance/common-framework-evidence.json#FW-BEH-102"
+        ],
+        "FW-BEH-103": [
+          "Conformance/common-framework-evidence.json#FW-BEH-103"
+        ],
+        "FW-BEH-105": [
+          "Conformance/common-framework-evidence.json#FW-BEH-105"
+        ],
+        "FW-BEH-106": [
+          "Conformance/common-framework-evidence.json#FW-BEH-106"
+        ],
+        "FW-SEC-101": [
+          "Conformance/common-framework-evidence.json#FW-SEC-101"
+        ],
+        "FW-SEC-103": [
+          "Conformance/common-framework-evidence.json#FW-SEC-103"
+        ],
+        "FW-SEC-104": [
+          "Conformance/common-framework-evidence.json#FW-SEC-104"
+        ],
+        "FW-AUTH-104": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-104"
+        ],
+        "FW-AUTH-105": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-105"
+        ],
+        "FW-AUTH-108": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-108"
+        ],
+        "FW-BEH-107": [
+          "Conformance/common-framework-evidence.json#FW-BEH-107"
+        ],
+        "FW-AUTH-109": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-109"
+        ],
+        "FW-SEC-102": [
+          "Conformance/common-framework-evidence.json#FW-SEC-102"
+        ],
+        "FW-REQ-104": [
+          "Conformance/common-framework-evidence.json#FW-REQ-104"
+        ],
+        "FW-REQ-109": [
+          "Conformance/common-framework-evidence.json#FW-REQ-109"
+        ],
+        "FW-BEH-104": [
+          "Conformance/common-framework-evidence.json#FW-BEH-104"
+        ]
       },
       "not_applicable": [
         {
-          "case_ids": ["FW-REQ-007"],
+          "case_ids": [
+            "FW-REQ-007"
+          ],
           "reason": "The generic OkHttp integration owns no framework timeout policy; callers configure OkHttp call timeouts directly."
         },
         {
-          "case_ids": ["FW-BEH-005"],
+          "case_ids": [
+            "FW-BEH-005"
+          ],
           "reason": "Framework-owned retries are consumer-specific; the generic OkHttp row claims only safe native authenticator replay, which is covered by FW-BEH-006."
         },
         {
-          "case_ids": ["FW-SEC-004"],
+          "case_ids": [
+            "FW-SEC-004"
+          ],
           "reason": "Global fetch is a JavaScript runtime concept; the Android integration uses only the configured OkHttp client."
         },
         {
-          "case_ids": ["FW-OAI-001", "FW-OAI-002", "FW-VAI-001", "FW-VAI-002", "FW-VAI-003", "FW-VAI-004", "FW-LC-001", "FW-LC-002", "FW-LC-003"],
+          "case_ids": [
+            "FW-OAI-001",
+            "FW-OAI-002",
+            "FW-VAI-001",
+            "FW-VAI-002",
+            "FW-VAI-003",
+            "FW-VAI-004",
+            "FW-LC-001",
+            "FW-LC-002",
+            "FW-LC-003"
+          ],
           "reason": "These cases describe JavaScript framework adapter APIs rather than the generic Android OkHttp integration."
+        },
+        {
+          "case_ids": [
+            "FW-REQ-106"
+          ],
+          "reason": "The generic OkHttp integration owns no framework timeout policy; callers configure OkHttp call timeouts directly.",
+          "evidence": [
+            "README.md"
+          ]
+        },
+        {
+          "case_ids": [
+            "FW-SEC-106"
+          ],
+          "reason": "The generic Android OkHttp integration has no React Native JavaScript bridge.",
+          "evidence": [
+            "AGENTS.md"
+          ]
+        }
+      ],
+      "pending": [
+        {
+          "case_ids": [
+            "FW-AUTH-107"
+          ],
+          "reason": "DPoP replay rejection still requires a real gateway enforcement boundary; local proof tests establish fresh JTI semantics without claiming hosted replay denial.",
+          "blocker": "hosted",
+          "evidence": [
+            "latchway-core/src/test/kotlin/dev/latchway/core/DpopContractTest.kt"
+          ]
+        },
+        {
+          "case_ids": [
+            "FW-SEC-105"
+          ],
+          "reason": "Hardware-backed AndroidKeyStore private-key residency requires protected physical-device evidence.",
+          "blocker": "protected_device",
+          "evidence": [
+            "sample-conformance/src/main/kotlin/dev/latchway/sample/conformance/ConformanceActivity.kt"
+          ]
         }
       ]
     },
@@ -46,37 +213,198 @@
       "id": "koog-android",
       "support": "experimental",
       "pass": {
-        "FW-AUTH-001": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogPreservesChatToolsAndStructuredOutputThroughLatchwayOkHttp", "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#publishedOkHttpFrameworkDeclarationMatchesThePinnedRuntime"],
-        "FW-REQ-002": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogPreservesChatToolsAndStructuredOutputThroughLatchwayOkHttp"],
-        "FW-REQ-004": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogPreservesChatToolsAndStructuredOutputThroughLatchwayOkHttp"],
-        "FW-REQ-005": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogStreamingIsIncrementalAndPreservesFinalUsage"],
-        "FW-REQ-006": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogCoroutineCancellationCancelsTheUnderlyingOkHttpEventSource"],
-        "FW-REQ-007": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogTimeoutPropagatesWithoutLeakingCredentials"],
-        "FW-BEH-001": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogPreservesChatToolsAndStructuredOutputThroughLatchwayOkHttp"],
-        "FW-BEH-002": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogPreservesChatToolsAndStructuredOutputThroughLatchwayOkHttp"],
-        "FW-BEH-003": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogQuotaErrorPreservesTheLatchwayRequestIdAndNoCredentialMaterial"],
-        "FW-BEH-005": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogNativeRetryCreatesANewDpopProofForEveryFrameworkAttempt"],
-        "FW-BEH-006": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogReplayableRequestUsesOnlyTheCorrelatedPreDispatchRefresh"],
-        "FW-SEC-001": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogPreservesChatToolsAndStructuredOutputThroughLatchwayOkHttp"],
-        "FW-SEC-002": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#dataPlaneRouteAuthorizationIsExactAndFeatureBound"],
-        "FW-SEC-003": ["latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogTimeoutPropagatesWithoutLeakingCredentials"]
+        "FW-AUTH-001": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogPreservesChatToolsAndStructuredOutputThroughLatchwayOkHttp",
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#publishedOkHttpFrameworkDeclarationMatchesThePinnedRuntime"
+        ],
+        "FW-REQ-002": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogPreservesChatToolsAndStructuredOutputThroughLatchwayOkHttp"
+        ],
+        "FW-REQ-004": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogPreservesChatToolsAndStructuredOutputThroughLatchwayOkHttp"
+        ],
+        "FW-REQ-005": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogStreamingIsIncrementalAndPreservesFinalUsage"
+        ],
+        "FW-REQ-006": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogCoroutineCancellationCancelsTheUnderlyingOkHttpEventSource"
+        ],
+        "FW-REQ-007": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogTimeoutPropagatesWithoutLeakingCredentials"
+        ],
+        "FW-BEH-001": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogPreservesChatToolsAndStructuredOutputThroughLatchwayOkHttp"
+        ],
+        "FW-BEH-002": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogPreservesChatToolsAndStructuredOutputThroughLatchwayOkHttp"
+        ],
+        "FW-BEH-003": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogQuotaErrorPreservesTheLatchwayRequestIdAndNoCredentialMaterial"
+        ],
+        "FW-BEH-005": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogNativeRetryCreatesANewDpopProofForEveryFrameworkAttempt"
+        ],
+        "FW-BEH-006": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogReplayableRequestUsesOnlyTheCorrelatedPreDispatchRefresh"
+        ],
+        "FW-SEC-001": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogPreservesChatToolsAndStructuredOutputThroughLatchwayOkHttp"
+        ],
+        "FW-SEC-002": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/RoutePolicyTest.kt#dataPlaneRouteAuthorizationIsExactAndFeatureBound"
+        ],
+        "FW-SEC-003": [
+          "latchway-okhttp/src/test/kotlin/dev/latchway/okhttp/KoogFrameworkConformanceTest.kt#koogTimeoutPropagatesWithoutLeakingCredentials"
+        ],
+        "FW-AUTH-101": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-101"
+        ],
+        "FW-AUTH-102": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-102"
+        ],
+        "FW-AUTH-103": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-103"
+        ],
+        "FW-AUTH-106": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-106"
+        ],
+        "FW-REQ-101": [
+          "Conformance/common-framework-evidence.json#FW-REQ-101"
+        ],
+        "FW-REQ-102": [
+          "Conformance/common-framework-evidence.json#FW-REQ-102"
+        ],
+        "FW-REQ-103": [
+          "Conformance/common-framework-evidence.json#FW-REQ-103"
+        ],
+        "FW-REQ-105": [
+          "Conformance/common-framework-evidence.json#FW-REQ-105"
+        ],
+        "FW-REQ-106": [
+          "Conformance/common-framework-evidence.json#FW-REQ-106"
+        ],
+        "FW-REQ-107": [
+          "Conformance/common-framework-evidence.json#FW-REQ-107"
+        ],
+        "FW-REQ-108": [
+          "Conformance/common-framework-evidence.json#FW-REQ-108"
+        ],
+        "FW-REQ-109": [
+          "Conformance/common-framework-evidence.json#FW-REQ-109"
+        ],
+        "FW-BEH-101": [
+          "Conformance/common-framework-evidence.json#FW-BEH-101"
+        ],
+        "FW-BEH-102": [
+          "Conformance/common-framework-evidence.json#FW-BEH-102"
+        ],
+        "FW-BEH-103": [
+          "Conformance/common-framework-evidence.json#FW-BEH-103"
+        ],
+        "FW-BEH-104": [
+          "Conformance/common-framework-evidence.json#FW-BEH-104"
+        ],
+        "FW-BEH-105": [
+          "Conformance/common-framework-evidence.json#FW-BEH-105"
+        ],
+        "FW-BEH-106": [
+          "Conformance/common-framework-evidence.json#FW-BEH-106"
+        ],
+        "FW-SEC-101": [
+          "Conformance/common-framework-evidence.json#FW-SEC-101"
+        ],
+        "FW-SEC-103": [
+          "Conformance/common-framework-evidence.json#FW-SEC-103"
+        ],
+        "FW-SEC-104": [
+          "Conformance/common-framework-evidence.json#FW-SEC-104"
+        ],
+        "FW-AUTH-104": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-104"
+        ],
+        "FW-AUTH-105": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-105"
+        ],
+        "FW-AUTH-108": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-108"
+        ],
+        "FW-BEH-107": [
+          "Conformance/common-framework-evidence.json#FW-BEH-107"
+        ],
+        "FW-AUTH-109": [
+          "Conformance/common-framework-evidence.json#FW-AUTH-109"
+        ],
+        "FW-SEC-102": [
+          "Conformance/common-framework-evidence.json#FW-SEC-102"
+        ],
+        "FW-REQ-104": [
+          "Conformance/common-framework-evidence.json#FW-REQ-104"
+        ]
       },
       "not_applicable": [
         {
-          "case_ids": ["FW-REQ-001", "FW-REQ-003"],
+          "case_ids": [
+            "FW-REQ-001",
+            "FW-REQ-003"
+          ],
           "reason": "Koog 1.1.1's audited OpenAI client supports Chat Completions, not Responses or embeddings."
         },
         {
-          "case_ids": ["FW-BEH-004"],
+          "case_ids": [
+            "FW-BEH-004"
+          ],
           "reason": "No stable Koog-specific mapping is claimed for raw provider errors; Latchway quota correlation is covered separately."
         },
         {
-          "case_ids": ["FW-SEC-004"],
+          "case_ids": [
+            "FW-SEC-004"
+          ],
           "reason": "Global fetch is a JavaScript runtime concept; Koog uses the explicitly supplied OkHttp client."
         },
         {
-          "case_ids": ["FW-OAI-001", "FW-OAI-002", "FW-VAI-001", "FW-VAI-002", "FW-VAI-003", "FW-VAI-004", "FW-LC-001", "FW-LC-002", "FW-LC-003"],
+          "case_ids": [
+            "FW-OAI-001",
+            "FW-OAI-002",
+            "FW-VAI-001",
+            "FW-VAI-002",
+            "FW-VAI-003",
+            "FW-VAI-004",
+            "FW-LC-001",
+            "FW-LC-002",
+            "FW-LC-003"
+          ],
           "reason": "These cases describe JavaScript framework adapter APIs rather than Koog's Kotlin API."
+        },
+        {
+          "case_ids": [
+            "FW-SEC-106"
+          ],
+          "reason": "Koog is a native Kotlin integration and has no React Native JavaScript bridge.",
+          "evidence": [
+            "AGENTS.md"
+          ]
+        }
+      ],
+      "pending": [
+        {
+          "case_ids": [
+            "FW-AUTH-107"
+          ],
+          "reason": "DPoP replay rejection still requires a real gateway enforcement boundary; local proof tests establish fresh JTI semantics without claiming hosted replay denial.",
+          "blocker": "hosted",
+          "evidence": [
+            "latchway-core/src/test/kotlin/dev/latchway/core/DpopContractTest.kt"
+          ]
+        },
+        {
+          "case_ids": [
+            "FW-SEC-105"
+          ],
+          "reason": "Hardware-backed AndroidKeyStore private-key residency requires protected physical-device evidence.",
+          "blocker": "protected_device",
+          "evidence": [
+            "sample-conformance/src/main/kotlin/dev/latchway/sample/conformance/ConformanceActivity.kt"
+          ]
         }
       ]
     }

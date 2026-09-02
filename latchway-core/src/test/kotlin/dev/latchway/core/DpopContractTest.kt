@@ -20,6 +20,10 @@ import java.security.spec.ECParameterSpec
 import java.security.spec.ECPoint
 import java.security.spec.ECPrivateKeySpec
 import java.security.spec.ECPublicKeySpec
+import java.util.logging.Handler
+import java.util.logging.Level
+import java.util.logging.LogRecord
+import java.util.logging.Logger
 
 class DpopContractTest {
     private val fixture: JSONObject by lazy {
@@ -107,6 +111,111 @@ class DpopContractTest {
     }
 
     @Test
+    fun fwAuth107SemanticOnlyEveryLocallyProducedProofUsesAFreshJti() = kotlinx.coroutines.runBlocking {
+        var nextJti = 1
+        val factory = DpopProofFactory(
+            fixtureSigner(),
+            LatchwayClock { 100 },
+        ) { "semantic-jti-${nextJti++}" }
+        val request = DpopProofRequest(
+            "POST",
+            URI("https://gateway.example.test/v1/responses"),
+        )
+
+        val first = factory.create(request).reveal()
+        val second = factory.create(request).reveal()
+
+        assertNotEquals(first, second)
+        assertEquals("semantic-jti-1", proofClaims(first).getString("jti"))
+        assertEquals("semantic-jti-2", proofClaims(second).getString("jti"))
+        // FW-AUTH-107-semantic-only: hosted evidence must still prove replay rejection.
+    }
+
+    @Test
+    fun fwAuth108And109SemanticProofClaimsTrackTheExactUriAndMethod() = kotlinx.coroutines.runBlocking {
+        val factory = DpopProofFactory(
+            fixtureSigner(),
+            LatchwayClock { 100 },
+        ) { "semantic-binding-jti" }
+
+        val responsesPost = proofClaims(
+            factory.create(
+                DpopProofRequest(
+                    "POST",
+                    URI("https://gateway.example.test/v1/responses"),
+                ),
+            ).reveal(),
+        )
+        val messagesPost = proofClaims(
+            factory.create(
+                DpopProofRequest(
+                    "POST",
+                    URI("https://gateway.example.test/v1/messages"),
+                ),
+            ).reveal(),
+        )
+        val responsesGet = proofClaims(
+            factory.create(
+                DpopProofRequest(
+                    "GET",
+                    URI("https://gateway.example.test/v1/responses"),
+                ),
+            ).reveal(),
+        )
+
+        assertEquals("https://gateway.example.test/v1/responses", responsesPost.getString("htu"))
+        assertEquals("https://gateway.example.test/v1/messages", messagesPost.getString("htu"))
+        assertEquals("POST", responsesPost.getString("htm"))
+        assertEquals("GET", responsesGet.getString("htm"))
+        // FW-AUTH-108-semantic-binding and FW-AUTH-109-semantic-binding. The
+        // pre-dispatch rejection tests, not these claim checks, prove rejection.
+    }
+
+    @Test
+    fun fwBeh107ProductionDiagnosticSurfacesRemainCredentialFreeWhenLogged() {
+        // FW-BEH-107
+        val secret = "identity_token=eyJ${"a".repeat(80)}"
+        val request = LatchwayTransportRequest(
+            method = "POST",
+            uri = URI("https://gateway.example.test/client/v1/sessions"),
+            headers = mapOf("Authorization" to "DPoP $secret", "DPoP" to secret),
+            body = secret.toByteArray(StandardCharsets.UTF_8),
+        )
+        val response = LatchwayTransportResponse(
+            statusCode = 401,
+            headers = mapOf("DPoP-Nonce" to listOf(secret)),
+            body = secret.toByteArray(StandardCharsets.UTF_8),
+        )
+        val error = LatchwayException(
+            LatchwayErrorCode.INTERNAL_ERROR,
+            safeMessage = secret,
+            cause = IllegalStateException(secret),
+        )
+        val records = mutableListOf<String>()
+        val logger = Logger.getAnonymousLogger().apply {
+            useParentHandlers = false
+            level = Level.ALL
+            addHandler(object : Handler() {
+                override fun publish(record: LogRecord) {
+                    records += record.message
+                }
+
+                override fun flush() = Unit
+                override fun close() = Unit
+            })
+        }
+
+        logger.info(request.toString())
+        logger.info(response.toString())
+        logger.info(error.toString())
+        val logged = records.joinToString("\n")
+
+        assertFalse(logged.contains(secret))
+        assertFalse(logged.contains("eyJ"))
+        assertTrue(logged.contains("[REDACTED]") || logged.contains("Sensitive detail redacted"))
+    }
+
+    @Test
     fun base64UrlRejectsPaddingAndNonCanonicalTailBits() {
         assertThrows(IllegalArgumentException::class.java) { Base64Url.decode("AA==") }
         assertThrows(IllegalArgumentException::class.java) { Base64Url.decode("AB") }
@@ -147,6 +256,12 @@ class DpopContractTest {
                 params,
             ),
         ) as ECPublicKey
+    }
+
+    private fun proofClaims(proof: String): JSONObject {
+        val parts = proof.split('.')
+        assertEquals(3, parts.size)
+        return JSONObject(String(Base64Url.decode(parts[1]), StandardCharsets.UTF_8))
     }
 
     private fun fixtureSigner(): InstallationSigner {
