@@ -699,10 +699,12 @@ class ReleaseWorkflowTests(unittest.TestCase):
             sha256sum_stub = test_bin / "sha256sum"
             sha256sum_stub.write_text(
                 "#!/bin/sh\n"
+                "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin\n"
+                "export PATH\n"
                 "if [ \"$#\" -eq 2 ] && [ \"$1\" = --check ] && [ \"$2\" = --strict ]; then\n"
-                "  exec /sbin/sha256sum -c -\n"
+                "  exec sha256sum -c -\n"
                 "fi\n"
-                "exec /sbin/sha256sum \"$@\"\n",
+                "exec sha256sum \"$@\"\n",
                 encoding="utf-8",
             )
             sha256sum_stub.chmod(0o700)
