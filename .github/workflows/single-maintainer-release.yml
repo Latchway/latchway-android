@@ -15,30 +15,9 @@ env:
   RELEASE_TAG: v1.0.0
 
 jobs:
-  tag:
-    name: Create the v1.0.0 tag
-    if: github.repository == 'Latchway/latchway-android' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: write
-    steps:
-      - name: Check out the v1 source
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          fetch-depth: 0
-
-      - name: Create and push the v1.0.0 tag
-        run: |
-          set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git tag --annotate "$RELEASE_TAG" --message 'Latchway Android SDK v1.0.0'
-          git push origin "refs/tags/$RELEASE_TAG"
-
   package:
     name: Package and sign the Maven Central bundle
-    needs: tag
+    if: github.repository == 'Latchway/latchway-android' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment: single-maintainer-v1-signing
@@ -61,10 +40,13 @@ jobs:
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
         with:
           cmdline-tools-version: "14742923" # 20.0
-          packages: |
-            platform-tools
-            platforms;android-37.0
-            build-tools;36.0.0
+          packages: ""
+
+      - name: Install the Android packaging toolchain
+        run: >-
+          sdkmanager --channel=0
+          'platforms;android-37.0'
+          'build-tools;36.0.0'
 
       - name: Build and sign the Maven publication files
         env:
@@ -140,7 +122,7 @@ jobs:
 
   github-release:
     name: Create the GitHub v1.0.0 release
-    needs: [tag, package, publish-maven-central]
+    needs: [package, publish-maven-central]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
