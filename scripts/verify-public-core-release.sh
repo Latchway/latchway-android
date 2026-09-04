@@ -23,8 +23,8 @@ read -r major minor patch <<< "$version"
 gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
   "repos/$core_repository/releases/tags/$core_tag" > "$RUNNER_TEMP/core-release-api.json"
 jq --exit-status '
-  .tag_name == "v1.0.0" and .draft == false and .prerelease == false and
-  (.assets | length) == 15 and ([.assets[].name] | unique | length) == 15 and
+  .tag_name == "v1.0.0" and .draft == false and .prerelease == false and .immutable == true and
+  (.assets | length) == 11 and ([.assets[].name] | unique | length) == 11 and
   all(.assets[]; (.size | type == "number" and . > 0 and . <= 33554432))
 ' "$RUNNER_TEMP/core-release-api.json" >/dev/null
 gh release download "$core_tag" --repo "$core_repository" --dir "$output"
@@ -69,13 +69,4 @@ gh attestation verify "$output/latchway-candidate.json" \
   --signer-workflow "$core_repository/.github/workflows/release.yml" \
   --source-digest "$core_commit" --signer-digest "$core_commit" \
   --source-ref refs/heads/main --deny-self-hosted-runners >/dev/null
-for platform in compose cloud_run; do
-  gh attestation verify "$output/$platform.tar.gz" \
-    --bundle "$output/$platform.attestation.json" \
-    --repo "$core_repository" \
-    --signer-workflow "$core_repository/.github/workflows/deployment-evidence.yml" \
-    --source-digest "$core_commit" --signer-digest "$core_commit" \
-    --source-ref refs/heads/main --deny-self-hosted-runners >/dev/null
-done
-
-printf '%s\n' "verified public core $core_tag at $core_commit with exact Compose and Cloud Run evidence"
+printf '%s\n' "verified public core $core_tag at $core_commit as registry-only; cloud deployment evidence is explicitly deferred"

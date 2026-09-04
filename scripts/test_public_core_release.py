@@ -5,11 +5,9 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
-import io
 import json
 from pathlib import Path
 import sys
-import tarfile
 import tempfile
 import unittest
 
@@ -57,9 +55,6 @@ class PublicCoreReleaseTests(unittest.TestCase):
             "artifacts": [],
         }
         self.refresh_candidate()
-        self.deployments: dict[str, dict[str, object]] = {}
-        for index, platform in enumerate(("compose", "cloud_run"), start=100):
-            self.write_deployment(platform, str(index))
         self.record = {
             "schema_version": 1,
             "kind": "latchway_single_maintainer_v1_core_release",
@@ -75,7 +70,7 @@ class PublicCoreReleaseTests(unittest.TestCase):
             "version": "1.0.0",
             "image": {"repository": "ghcr.io/latchway/latchway", "index_digest": self.image_digest, "coordinate": f"ghcr.io/latchway/latchway@{self.image_digest}", "platforms": self.platforms},
             "candidate_run": {"run_id": "99", "run_attempt": 1},
-            "deployment_evidence": self.deployments,
+            "deployment_evidence": {},
             "supply_chain": {"multi_arch_image_verified": True, "vulnerability_scan_verified": True, "license_scan_verified": True, "sbom_verified": True, "signature_verified": True, "provenance_verified": True},
             "github_release": {"title": "Latchway v1.0.0 — single_maintainer_v1", "body": MODULE.release_body(self.commit, f"ghcr.io/latchway/latchway@{self.image_digest}"), "tag_message": "\n".join(("Latchway v1.0.0", "", "Release profile: single_maintainer_v1", f"Candidate commit: {self.commit}", f"Image: ghcr.io/latchway/latchway@{self.image_digest}"))},
             "claims": {"release_qualified": False, "fully_evidence_gated": False, "independently_reviewed": False},
@@ -94,28 +89,6 @@ class PublicCoreReleaseTests(unittest.TestCase):
         ]
         write_json(self.root / "latchway-candidate.json", self.candidate)
 
-    def write_deployment(self, platform: str, run_id: str, override_platform: str | None = None) -> None:
-        coordinate = f"ghcr.io/latchway/latchway@{self.image_digest}"
-        collector = {"repository": "Latchway/latchway", "workflow_ref": "Latchway/latchway/.github/workflows/deployment-evidence.yml@refs/heads/main", "ref": "refs/heads/main", "sha": self.commit, "run_id": run_id, "run_attempt": 1, "runner_environment": "github-hosted", "environment": f"deployment-evidence-{platform}"}
-        identity = override_platform or platform
-        values = {name: {} for name in MODULE.CAPTURE_FILES}
-        common = {"schema_version": 1, "platform": identity, "core_release": "v1.0.0", "contract_version": "1.0.0", "bundle_sha256": self.candidate["contract"]["bundle_sha256"], "oci_image_digest": coordinate, "endpoint": f"https://{platform}.example", "provider_resource_id": f"resource-{platform}", "collector": collector}
-        values["manifest.json"] = {**common, "kind": "latchway_cloud_deployment_capture", "core_commit": self.commit, "started_at": "2026-09-01T00:00:00Z", "finished_at": "2026-09-01T00:01:00Z", "observations": {}}
-        values["latchway-deployment-binding.json"] = {**common, "kind": "latchway_authenticated_deployment_capture", "candidate_commit": self.commit, "candidate_archive": {}, "raw_capture": {}}
-        archive_path = self.root / f"{platform}.tar.gz"
-        with tarfile.open(archive_path, "w:gz", format=tarfile.PAX_FORMAT) as archive:
-            for name in sorted(values):
-                payload = (json.dumps(values[name], sort_keys=True) + "\n").encode()
-                info = tarfile.TarInfo(name)
-                info.size = len(payload)
-                info.mode = 0o644
-                info.uid = info.gid = 0
-                info.uname = info.gname = ""
-                info.mtime = 0
-                archive.addfile(info, io.BytesIO(payload))
-        write_json(self.root / f"{platform}.attestation.json", {"bundle": platform})
-        self.deployments[platform] = {"platform": platform, "run_id": run_id, "run_attempt": 1, "endpoint": common["endpoint"], "provider_resource_id": common["provider_resource_id"], "archive_sha256": digest(archive_path), "attestation_sha256": digest(self.root / f"{platform}.attestation.json")}
-
     def reseal(self) -> None:
         self.record["assets"] = [
             {"path": name, "sha256": digest(self.root / name)}
@@ -129,6 +102,14 @@ class PublicCoreReleaseTests(unittest.TestCase):
         result = MODULE.verify(self.root, self.locked)
         self.assertEqual(result["candidate_commit"], self.commit)
         self.assertEqual(result["image"], f"ghcr.io/latchway/latchway@{self.image_digest}")
+        self.assertEqual(result["publication_scope"], "registry_only")
+        self.assertEqual(result["cloud_deployments"], "deferred")
+        self.assertEqual(self.record["deployment_evidence"], {})
+        self.assertEqual(self.record["deferred_evidence"], list(MODULE.DEFERRED_EVIDENCE))
+        self.assertIn(
+            "Deployment evidence: deferred by this publication profile; no deployment target is claimed as verified.",
+            result["body"],
+        )
 
     def test_rejects_high_scan_even_when_all_hashes_are_resealed(self) -> None:
         path = self.root / "latchway-linux-amd64-vulnerability.json"
@@ -166,15 +147,17 @@ class PublicCoreReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.Rejected, "core_release_scan_invalid"):
             MODULE.verify(self.root, self.locked)
 
-    def test_rejects_deployment_platform_substitution_with_matching_hashes(self) -> None:
-        self.write_deployment("compose", "100", override_platform="cloud_run")
-        self.record["deployment_evidence"] = self.deployments
+    def test_rejects_fabricated_deployment_evidence_even_when_resealed(self) -> None:
+        self.record["deployment_evidence"] = {
+            "compose": {"verified": True},
+            "cloud_run": {"verified": True},
+        }
         self.reseal()
-        with self.assertRaisesRegex(MODULE.Rejected, "core_deployment_identity_invalid"):
+        with self.assertRaisesRegex(MODULE.Rejected, "core_release_record_identity_invalid"):
             MODULE.verify(self.root, self.locked)
 
-    def test_rejects_unexpected_release_asset(self) -> None:
-        (self.root / "unexpected").write_text("unexpected\n", encoding="utf-8")
+    def test_rejects_legacy_deployment_asset(self) -> None:
+        (self.root / "compose.tar.gz").write_bytes(b"fabricated deployment evidence")
         with self.assertRaisesRegex(MODULE.Rejected, "core_release_asset_closure_invalid"):
             MODULE.verify(self.root, self.locked)
 

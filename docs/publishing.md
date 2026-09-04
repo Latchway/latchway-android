@@ -158,16 +158,16 @@ evidence, annotated tag, release title, and release body all forbid describing
 the result as `release_qualified`, fully evidence-gated, or independently
 reviewed.
 
-The global profile still requires exact Docker Compose and GCP Cloud Run
-evidence. Before any Android tag or Maven publication, this workflow downloads
-the public core `v1.0.0` release and cryptographically and semantically verifies
-its exact `single_maintainer_v1` profile record, annotated core tag, scans,
-SBOMs, image digest, candidate provenance, and the authenticated Compose and
-Cloud Run captures. The `contract.lock` core commit must be an ancestor of that
-published core commit. AWS, Fly.io,
-Cloudflare Containers, Mintlify, physical Play Integrity, Firebase App Check,
-Turnstile, live-provider, and independent-review evidence remain explicitly
-deferred.
+Before any Android tag or Maven publication, this workflow downloads the
+public core `v1.0.0` release and cryptographically and semantically verifies
+its exact registry-only `single_maintainer_v1` profile record, annotated core
+tag, scans, SBOMs, image digest, and candidate provenance. The signed core
+record must have `deployment_evidence: {}` and the exact `cloud_deployments`
+deferred entry; deployment archives and claims that Compose, Cloud Run, or
+another target passed are rejected. The `contract.lock` core commit must be an
+ancestor of that published core commit. Cloud deployments, Mintlify, physical
+Play Integrity, Firebase App Check, Turnstile, live-provider, and
+independent-review evidence remain explicitly deferred.
 
 Before this workflow may be dispatched, create four main-only GitHub
 environments with no required reviewer. The absence of a reviewer is deliberate
@@ -251,10 +251,14 @@ assets.
 
 This profile does not require GitHub's independent-review or immutable-release
 administration gates. That is an explicit assurance reduction, not evidence
-that those controls passed. Once its distinct `v1.0.0` tag and release are
-published, the strict workflow cannot retroactively relabel the same bytes as a
-strict evidence-gated v1; a later strict release must use a new version and pass
-the strict promotion path from the start.
+that those controls passed. The tag may therefore be created before GitHub
+proves the repository's immutable-release setting. The final publisher still
+requires an unchanged release ETag, exact asset and tag closure,
+`immutable: true`, and successful release and per-asset attestation
+verification before it reports success. Once its distinct `v1.0.0` tag and
+release are published, the strict workflow cannot retroactively relabel the
+same bytes as a strict evidence-gated v1; a later strict release must use a new
+version and pass the strict promotion path from the start.
 
 ## Stage a release
 

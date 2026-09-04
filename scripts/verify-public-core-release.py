@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-"""Verify the closed public core single-maintainer v1 evidence directory."""
+"""Verify the registry-only public core single-maintainer v1 evidence directory."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
-import io
 import json
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
 import stat
-import tarfile
 from typing import Any, Iterable
 
 
@@ -35,23 +33,8 @@ EVIDENCE_ASSETS = {
     "latchway-candidate.json",
     "latchway-candidate.attestation.sigstore.json",
     *CANDIDATE_ASSETS,
-    "compose.tar.gz",
-    "compose.attestation.json",
-    "cloud_run.tar.gz",
-    "cloud_run.attestation.json",
 }
 EXPECTED_FILES = {"SHA256SUMS", "latchway-single-maintainer-v1.json", *EVIDENCE_ASSETS}
-CAPTURE_FILES = {
-    "control_plane.json",
-    "health.json",
-    "identity.json",
-    "manifest.json",
-    "migration.json",
-    "readiness.json",
-    "secrets.json",
-    "shutdown.json",
-    "latchway-deployment-binding.json",
-}
 DEFERRED_EVIDENCE = (
     "independent_human_review",
     "live_sdk_conformance",
@@ -61,9 +44,7 @@ DEFERRED_EVIDENCE = (
     "firebase_app_check",
     "turnstile",
     "live_provider",
-    "cloud_deployments.aws_verified",
-    "cloud_deployments.fly_io_verified",
-    "cloud_deployments.cloudflare_containers_verified",
+    "cloud_deployments",
     "operational_resilience",
     "public_registries.documentation_production_verified",
     "mintlify_production",
@@ -216,56 +197,8 @@ def verify_candidate(root: Path) -> dict[str, Any]:
     return candidate
 
 
-def archive_json(path: Path) -> dict[str, dict[str, Any]]:
-    regular(path)
-    values: dict[str, dict[str, Any]] = {}
-    try:
-        with tarfile.open(fileobj=io.BytesIO(path.read_bytes()), mode="r:gz") as archive:
-            members = archive.getmembers()
-            if {member.name for member in members} != CAPTURE_FILES or len(members) != len(CAPTURE_FILES):
-                raise Rejected("core_deployment_archive_closure_invalid")
-            for member in members:
-                relative = PurePosixPath(member.name)
-                if not member.isfile() or relative.as_posix() != member.name or len(relative.parts) != 1 or member.uid != 0 or member.gid != 0 or member.uname != "" or member.gname != "" or member.mode != 0o644 or member.mtime != 0 or not 0 < member.size <= 8 * 1024 * 1024:
-                    raise Rejected("core_deployment_archive_entry_unsafe")
-                source = archive.extractfile(member)
-                if source is None:
-                    raise Rejected("core_deployment_archive_invalid")
-                try:
-                    value = json.loads(source.read().decode("utf-8"), object_pairs_hook=strict_pairs)
-                except (UnicodeDecodeError, json.JSONDecodeError):
-                    raise Rejected("core_deployment_archive_json_invalid") from None
-                if not isinstance(value, dict):
-                    raise Rejected("core_deployment_archive_json_invalid")
-                values[member.name] = value
-    except Rejected:
-        raise
-    except (OSError, tarfile.TarError):
-        raise Rejected("core_deployment_archive_invalid") from None
-    return values
-
-
-def verify_deployment(root: Path, record: dict[str, Any], platform: str, commit: str, coordinate: str, bundle_sha256: str) -> None:
-    evidence = exact_fields(record["deployment_evidence"].get(platform), {"platform", "run_id", "run_attempt", "endpoint", "provider_resource_id", "archive_sha256", "attestation_sha256"}, "core_deployment_record_invalid")
-    run_id, run_attempt = evidence.get("run_id"), evidence.get("run_attempt")
-    if evidence.get("platform") != platform or not isinstance(run_id, str) or RUN.fullmatch(run_id) is None or not json_integer(run_attempt, minimum=1) or evidence.get("archive_sha256") != sha256(root / f"{platform}.tar.gz") or evidence.get("attestation_sha256") != sha256(root / f"{platform}.attestation.json"):
-        raise Rejected("core_deployment_record_invalid")
-    read_json(root / f"{platform}.attestation.json")
-    values = archive_json(root / f"{platform}.tar.gz")
-    manifest = values["manifest.json"]
-    binding = values["latchway-deployment-binding.json"]
-    exact_fields(manifest, {"schema_version", "kind", "platform", "started_at", "finished_at", "core_commit", "core_release", "contract_version", "bundle_sha256", "oci_image_digest", "endpoint", "provider_resource_id", "collector", "observations"}, "core_deployment_manifest_fields_invalid")
-    exact_fields(binding, {"schema_version", "kind", "platform", "candidate_commit", "core_release", "contract_version", "bundle_sha256", "oci_image_digest", "endpoint", "provider_resource_id", "collector", "candidate_archive", "raw_capture"}, "core_deployment_binding_fields_invalid")
-    collector = {"repository": "Latchway/latchway", "workflow_ref": "Latchway/latchway/.github/workflows/deployment-evidence.yml@refs/heads/main", "ref": "refs/heads/main", "sha": commit, "run_id": run_id, "run_attempt": run_attempt, "runner_environment": "github-hosted", "environment": f"deployment-evidence-{platform}"}
-    for document, kind, commit_field in ((manifest, "latchway_cloud_deployment_capture", "core_commit"), (binding, "latchway_authenticated_deployment_capture", "candidate_commit")):
-        if not json_integer(document.get("schema_version"), expected=1) or document.get("kind") != kind or document.get("platform") != platform or document.get(commit_field) != commit or document.get("core_release") != TAG or document.get("contract_version") != VERSION or document.get("bundle_sha256") != bundle_sha256 or document.get("oci_image_digest") != coordinate or document.get("collector") != collector or document.get("endpoint") != evidence.get("endpoint") or document.get("provider_resource_id") != evidence.get("provider_resource_id"):
-            raise Rejected("core_deployment_identity_invalid")
-    if not isinstance(manifest.get("started_at"), str) or not manifest["started_at"] or not isinstance(manifest.get("finished_at"), str) or not manifest["finished_at"] or not isinstance(manifest.get("observations"), dict) or not isinstance(binding.get("candidate_archive"), dict) or not isinstance(binding.get("raw_capture"), dict):
-        raise Rejected("core_deployment_identity_invalid")
-
-
 def release_body(commit: str, image: str) -> str:
-    return "\n".join((f"Latchway {TAG} core release.", "", "Release profile: single_maintainer_v1", "Profile status: incomplete until every required public package and registry check passes.", "Authenticated profile-wide publication readiness is not claimed by this core-only record.", f"Candidate commit: {commit}", f"Image: {image}", "Required deployment evidence: Docker Compose and Google Cloud Run passed for this exact image.", "", "Deferred evidence remains unverified. This release is not release-qualified, fully evidence-gated, or independently reviewed."))
+    return "\n".join((f"Latchway {TAG} core release.", "", "Release profile: single_maintainer_v1", "Profile status: incomplete until every required public package and registry check passes.", "Authenticated profile-wide publication readiness is not claimed by this core-only record.", f"Candidate commit: {commit}", f"Image: {image}", "Deployment evidence: deferred by this publication profile; no deployment target is claimed as verified.", "", "Deferred evidence remains unverified. This release is not release-qualified, fully evidence-gated, or independently reviewed."))
 
 
 def verify(root: Path, locked_commit: str) -> dict[str, Any]:
@@ -282,13 +215,11 @@ def verify(root: Path, locked_commit: str) -> dict[str, Any]:
     image = record.get("image")
     expected_message = "\n".join((f"Latchway {TAG}", "", "Release profile: single_maintainer_v1", f"Candidate commit: {commit}", f"Image: {coordinate}"))
     release = record.get("github_release")
-    if not json_integer(record.get("schema_version"), expected=1) or record.get("kind") != "latchway_single_maintainer_v1_core_release" or record.get("profile") != "single_maintainer_v1" or record.get("profile_status") != "incomplete" or record.get("release_policy") != RELEASE_POLICY or record.get("core_publication_gate") != "passed" or record.get("candidate_commit") != commit or record.get("tag") != TAG or record.get("version") != VERSION or image != {"repository": CORE_REPOSITORY, "index_digest": candidate["image"]["index_digest"], "coordinate": coordinate, "platforms": candidate["image"]["platforms"]} or record.get("supply_chain") != expected_supply or record.get("claims") != expected_claims or record.get("deferred_evidence") != list(DEFERRED_EVIDENCE) or release != {"title": "Latchway v1.0.0 — single_maintainer_v1", "body": release_body(commit, coordinate), "tag_message": expected_message}:
+    if not json_integer(record.get("schema_version"), expected=1) or record.get("kind") != "latchway_single_maintainer_v1_core_release" or record.get("profile") != "single_maintainer_v1" or record.get("profile_status") != "incomplete" or record.get("release_policy") != RELEASE_POLICY or record.get("core_publication_gate") != "passed" or record.get("candidate_commit") != commit or record.get("tag") != TAG or record.get("version") != VERSION or image != {"repository": CORE_REPOSITORY, "index_digest": candidate["image"]["index_digest"], "coordinate": coordinate, "platforms": candidate["image"]["platforms"]} or record.get("deployment_evidence") != {} or record.get("supply_chain") != expected_supply or record.get("claims") != expected_claims or record.get("deferred_evidence") != list(DEFERRED_EVIDENCE) or release != {"title": "Latchway v1.0.0 — single_maintainer_v1", "body": release_body(commit, coordinate), "tag_message": expected_message}:
         raise Rejected("core_release_record_identity_invalid")
     candidate_run = exact_fields(record.get("candidate_run"), {"run_id", "run_attempt"}, "core_candidate_run_invalid")
     if not isinstance(candidate_run.get("run_id"), str) or RUN.fullmatch(candidate_run["run_id"]) is None or not json_integer(candidate_run.get("run_attempt"), minimum=1):
         raise Rejected("core_candidate_run_invalid")
-    deployments = exact_fields(record.get("deployment_evidence"), {"compose", "cloud_run"}, "core_deployment_record_invalid")
-    del deployments
     assets = record.get("assets")
     if not isinstance(assets, list) or len(assets) != len(EVIDENCE_ASSETS):
         raise Rejected("core_release_record_assets_invalid")
@@ -301,9 +232,7 @@ def verify(root: Path, locked_commit: str) -> dict[str, Any]:
         observed[name] = digest
     if set(observed) != EVIDENCE_ASSETS or list(observed) != sorted(observed):
         raise Rejected("core_release_record_assets_invalid")
-    for platform in ("compose", "cloud_run"):
-        verify_deployment(root, record, platform, commit, coordinate, candidate["contract"]["bundle_sha256"])
-    return {"candidate_commit": commit, "locked_commit": locked_commit, "image": coordinate, "title": release["title"], "body": release["body"], "tag_message": release["tag_message"]}
+    return {"candidate_commit": commit, "locked_commit": locked_commit, "image": coordinate, "publication_scope": "registry_only", "cloud_deployments": "deferred", "title": release["title"], "body": release["body"], "tag_message": release["tag_message"]}
 
 
 def main() -> int:

@@ -39,9 +39,7 @@ DEFERRED_EVIDENCE = [
     "firebase_app_check",
     "turnstile",
     "live_provider",
-    "cloud_deployments.aws_verified",
-    "cloud_deployments.fly_io_verified",
-    "cloud_deployments.cloudflare_containers_verified",
+    "cloud_deployments",
     "operational_resilience",
     "public_registries.documentation_production_verified",
     "mintlify_production",
@@ -247,10 +245,7 @@ def verify(arguments: argparse.Namespace) -> dict[str, str]:
         "maven_coordinates": MAVEN_COORDINATES,
         "deferred_evidence": DEFERRED_EVIDENCE,
         "forbidden_claims": FORBIDDEN_CLAIMS,
-        "global_profile_required_evidence": [
-            "cloud_deployments.compose_verified",
-            "cloud_deployments.gcp_cloud_run_verified",
-        ],
+        "global_profile_required_evidence": [],
         "downstream_required_gates": [
             "complete_local_release_tests_before_tag",
             "dependency_vulnerability_scan_before_tag",

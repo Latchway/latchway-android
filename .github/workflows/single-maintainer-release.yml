@@ -316,47 +316,14 @@ jobs:
         with:
           ref: ${{ needs.intent.outputs.commit }}
           persist-credentials: false
-      - name: Verify the public single-maintainer core record, supply chain, Compose, and Cloud Run
+      - name: Verify registry-only public core record and supply chain with cloud deployments deferred
         env:
           GH_TOKEN: ${{ github.token }}
         run: scripts/verify-public-core-release.sh "${{ needs.intent.outputs.core_commit }}" "$RUNNER_TEMP/public-core-v1"
 
-  immutable-release-settings:
-    name: Require immutable GitHub releases before any publication mutation
-    needs: intent
-    if: github.repository == 'Latchway/latchway-android' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    environment: single-maintainer-v1-administration
-    permissions:
-      contents: read
-    steps:
-      - name: Verify exact single-maintainer administration policy
-        env:
-          OBSERVED_POLICY_ID: ${{ vars.LATCHWAY_RELEASE_PROFILE_POLICY_ID }}
-        run: |
-          set -euo pipefail
-          test "$OBSERVED_POLICY_ID" = "latchway-release-profile-v1:latchway-android:single_maintainer_v1:administration"
-      - name: Verify immutable releases are enabled with the isolated administration credential
-        env:
-          GH_TOKEN: ${{ secrets.LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN }}
-        run: |
-          set -euo pipefail
-          test -n "$GH_TOKEN"
-          version=$(gh --version | sed -nE '1s/^gh version ([0-9]+)\.([0-9]+)\.([0-9]+).*$/\1 \2 \3/p')
-          read -r major minor patch <<< "$version"
-          [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ && "$patch" =~ ^[0-9]+$ ]]
-          (( major > 2 || (major == 2 && minor >= 97) ))
-          gh api -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/immutable-releases" > "$RUNNER_TEMP/immutable-releases.json"
-          jq --exit-status '
-            type == "object" and (keys | sort) == ["enabled","enforced_by_owner"] and
-            .enabled == true and (.enforced_by_owner | type) == "boolean"
-          ' "$RUNNER_TEMP/immutable-releases.json" >/dev/null
-
   tag:
     name: Create or adopt exact annotated deferred-assurance tag
-    needs: [intent, verify, core-release-gate, immutable-release-settings]
+    needs: [intent, verify, core-release-gate]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: single-maintainer-v1-github
@@ -715,13 +682,12 @@ jobs:
                 "dev.latchway:latchway-firebase-auth:1.0.0",
                 "dev.latchway:latchway-bom:1.0.0"
               ],
-              global_profile_required_evidence:["cloud_deployments.compose_verified","cloud_deployments.gcp_cloud_run_verified"],
+              global_profile_required_evidence:[],
               deferred_evidence:[
                 "independent_human_review","live_sdk_conformance","physical_devices",
                 "apple_distribution_and_extensions","play_integrity_and_android_device",
-                "firebase_app_check","turnstile","live_provider",
-                "cloud_deployments.aws_verified","cloud_deployments.fly_io_verified",
-                "cloud_deployments.cloudflare_containers_verified","operational_resilience",
+                "firebase_app_check","turnstile","live_provider","cloud_deployments",
+                "operational_resilience",
                 "public_registries.documentation_production_verified","mintlify_production"
               ],
               forbidden_claims:["release_qualified","fully_evidence_gated","independently_reviewed"]
@@ -814,7 +780,7 @@ jobs:
           notes="$RUNNER_TEMP/release-notes.md"
           body="Published with the \`single_maintainer_v1\` profile.
 
-          The Maven Central bytes, OpenPGP signatures, deterministic source artifacts, pinned-core conformance, and GitHub provenance in this release were verified by automation. Independent human review and external platform/device/provider evidence are deferred. Docker Compose and GCP Cloud Run evidence remain required by the global v1 profile.
+          The Maven Central bytes, OpenPGP signatures, deterministic source artifacts, pinned-core conformance, and GitHub provenance in this registry-only release were verified by automation. Independent human review, cloud deployments, and external platform/device/provider evidence are deferred. No deployment target is claimed as verified.
 
           This release is not \`release_qualified\`, fully evidence-gated, or independently reviewed."
           printf '%s' "$body" > "$notes"

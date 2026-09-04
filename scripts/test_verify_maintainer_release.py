@@ -99,13 +99,9 @@ class MaintainerReleaseVerifierTests(unittest.TestCase):
         self.assertFalse(value["release_qualified"])
         self.assertFalse(value["requires_independent_human_review"])
         self.assertIn("independent_human_review", value["deferred_evidence"])
-        self.assertEqual(
-            value["global_profile_required_evidence"],
-            [
-                "cloud_deployments.compose_verified",
-                "cloud_deployments.gcp_cloud_run_verified",
-            ],
-        )
+        self.assertIn("cloud_deployments", value["deferred_evidence"])
+        self.assertFalse(any(item.startswith("cloud_deployments.") for item in value["deferred_evidence"]))
+        self.assertEqual(value["global_profile_required_evidence"], [])
         self.assertEqual(self.output.stat().st_mode & 0o777, 0o600)
 
     def test_rejects_every_dispatch_identity_mismatch(self) -> None:

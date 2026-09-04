@@ -47,8 +47,7 @@ class SingleMaintainerWorkflowTests(unittest.TestCase):
         cls.source = WORKFLOW.read_text(encoding="utf-8")
         cls.intent = job(cls.source, "intent", "verify")
         cls.verify = job(cls.source, "verify", "core-release-gate")
-        cls.core = job(cls.source, "core-release-gate", "immutable-release-settings")
-        cls.administration = job(cls.source, "immutable-release-settings", "tag")
+        cls.core = job(cls.source, "core-release-gate", "tag")
         cls.tag = job(cls.source, "tag", "sign")
         cls.sign = job(cls.source, "sign", "publish-central")
         cls.publish = job(cls.source, "publish-central", "verify-publication")
@@ -64,7 +63,7 @@ class SingleMaintainerWorkflowTests(unittest.TestCase):
     def test_exact_request_is_bound_before_every_release_job(self) -> None:
         self.assertIn("python3 scripts/verify-maintainer-release.py", self.intent)
         self.assertIn("publish-v1.0.0-with-deferred-assurance", self.source)
-        self.assertIn("needs: [intent, verify, core-release-gate, immutable-release-settings]", self.tag)
+        self.assertIn("needs: [intent, verify, core-release-gate]", self.tag)
         self.assertIn("needs: [intent, tag, sign]", self.publish)
         self.assertIn("needs: [intent, tag, sign, publish-central]", self.public)
         self.assertIn("needs: [intent, tag, verify-publication]", self.github)
@@ -116,13 +115,18 @@ class SingleMaintainerWorkflowTests(unittest.TestCase):
         for value in (
             "single-maintainer-release.yml",
             "release.yml",
-            "deployment-evidence.yml",
             "compare/$locked_core_commit...$core_commit",
             "gh attestation verify",
+            "registry-only; cloud deployment evidence is explicitly deferred",
+            ".immutable == true",
+            "(.assets | length) == 11",
         ):
             self.assertIn(value, verifier)
-        for value in ("core_publication_gate", "vulnerability_scan_verified", "sbom_verified", "compose", "cloud_run"):
+        for value in ("core_publication_gate", "vulnerability_scan_verified", "sbom_verified", 'record.get("deployment_evidence") != {}', '"cloud_deployments"', '"publication_scope": "registry_only"'):
             self.assertIn(value, semantic)
+        self.assertNotIn("deployment-evidence.yml", verifier)
+        self.assertNotIn("compose.tar.gz", semantic)
+        self.assertNotIn("cloud_run.tar.gz", semantic)
         self.assertNotIn("secrets.", self.core)
         self.assertNotIn("contents: write", self.core)
         self.assertNotIn("retention-days: 14", self.source)
@@ -165,6 +169,11 @@ class SingleMaintainerWorkflowTests(unittest.TestCase):
         self.assertIn("diff -qr \"$RUNNER_TEMP/release\"", self.github)
         self.assertNotIn("--clobber", self.github)
         self.assertIn("not \\`release_qualified\\`", self.github)
+        self.assertIn("registry-only release", self.github)
+        self.assertIn("global_profile_required_evidence:[]", self.public)
+        self.assertIn('"cloud_deployments"', self.public)
+        self.assertNotIn("cloud_deployments.compose_verified", self.public)
+        self.assertNotIn("cloud_deployments.gcp_cloud_run_verified", self.public)
         self.assertIn(".immutable == true", self.github)
         self.assertIn("If-None-Match:", self.github)
         self.assertIn("304( |$)", self.github)
@@ -172,19 +181,12 @@ class SingleMaintainerWorkflowTests(unittest.TestCase):
         self.assertIn('gh release verify "$RELEASE_TAG"', self.github)
         self.assertIn("pre-publish-tag-ref.json", self.github)
 
-    def test_immutable_release_policy_is_isolated_and_precedes_tag(self) -> None:
-        self.assertIn("environment: single-maintainer-v1-administration", self.administration)
-        self.assertIn(
-            "latchway-release-profile-v1:latchway-android:single_maintainer_v1:administration",
-            self.administration,
-        )
-        self.assertEqual(
-            self.administration.count("LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN"), 1
-        )
-        self.assertIn("repos/$GITHUB_REPOSITORY/immutable-releases", self.administration)
-        self.assertIn(".enabled == true", self.administration)
-        self.assertIn("gh --version", self.administration)
-        self.assertIn("major == 2 && minor >= 97", self.administration)
+    def test_selected_profile_has_no_prepublication_administration_dependency(self) -> None:
+        self.assertNotIn("\n  immutable-release-settings:\n", self.source)
+        self.assertNotIn("single-maintainer-v1-administration", self.source)
+        self.assertNotIn("LATCHWAY_RELEASE_PROFILE_POLICY_ID", self.source)
+        self.assertNotIn("LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN", self.source)
+        self.assertNotIn("repos/$GITHUB_REPOSITORY/immutable-releases", self.source)
 
     def test_every_github_release_command_names_the_repository(self) -> None:
         commands = [line.strip() for line in self.source.splitlines() if "gh release " in line]
