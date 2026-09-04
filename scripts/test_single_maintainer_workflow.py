@@ -47,7 +47,8 @@ class SingleMaintainerWorkflowTests(unittest.TestCase):
         cls.source = WORKFLOW.read_text(encoding="utf-8")
         cls.intent = job(cls.source, "intent", "verify")
         cls.verify = job(cls.source, "verify", "core-release-gate")
-        cls.core = job(cls.source, "core-release-gate", "tag")
+        cls.core = job(cls.source, "core-release-gate", "immutable-release-settings")
+        cls.administration = job(cls.source, "immutable-release-settings", "tag")
         cls.tag = job(cls.source, "tag", "sign")
         cls.sign = job(cls.source, "sign", "publish-central")
         cls.publish = job(cls.source, "publish-central", "verify-publication")
@@ -63,7 +64,7 @@ class SingleMaintainerWorkflowTests(unittest.TestCase):
     def test_exact_request_is_bound_before_every_release_job(self) -> None:
         self.assertIn("python3 scripts/verify-maintainer-release.py", self.intent)
         self.assertIn("publish-v1.0.0-with-deferred-assurance", self.source)
-        self.assertIn("needs: [intent, verify, core-release-gate]", self.tag)
+        self.assertIn("needs: [intent, verify, core-release-gate, immutable-release-settings]", self.tag)
         self.assertIn("needs: [intent, tag, sign]", self.publish)
         self.assertIn("needs: [intent, tag, sign, publish-central]", self.public)
         self.assertIn("needs: [intent, tag, verify-publication]", self.github)
@@ -157,13 +158,40 @@ class SingleMaintainerWorkflowTests(unittest.TestCase):
     def test_github_release_adoption_checks_exact_body_metadata_assets_and_bytes(self) -> None:
         self.assertGreaterEqual(self.github.count(".body == $body"), 3)
         self.assertIn(".name == $title", self.github)
-        self.assertIn(".isDraft == false", self.github)
-        self.assertIn(".isPrerelease == false", self.github)
+        self.assertIn(".draft == false", self.github)
+        self.assertIn(".prerelease == false", self.github)
         self.assertIn("cmp --silent \"$RUNNER_TEMP/release/$name\"", self.github)
         self.assertIn("cmp --silent \"$RUNNER_TEMP/local-assets.txt\"", self.github)
         self.assertIn("diff -qr \"$RUNNER_TEMP/release\"", self.github)
         self.assertNotIn("--clobber", self.github)
         self.assertIn("not \\`release_qualified\\`", self.github)
+        self.assertIn(".immutable == true", self.github)
+        self.assertIn("If-None-Match:", self.github)
+        self.assertIn("304( |$)", self.github)
+        self.assertIn("gh release verify-asset", self.github)
+        self.assertIn('gh release verify "$RELEASE_TAG"', self.github)
+        self.assertIn("pre-publish-tag-ref.json", self.github)
+
+    def test_immutable_release_policy_is_isolated_and_precedes_tag(self) -> None:
+        self.assertIn("environment: single-maintainer-v1-administration", self.administration)
+        self.assertIn(
+            "latchway-release-profile-v1:latchway-android:single_maintainer_v1:administration",
+            self.administration,
+        )
+        self.assertEqual(
+            self.administration.count("LATCHWAY_GITHUB_RELEASE_ADMIN_TOKEN"), 1
+        )
+        self.assertIn("repos/$GITHUB_REPOSITORY/immutable-releases", self.administration)
+        self.assertIn(".enabled == true", self.administration)
+        self.assertIn("gh --version", self.administration)
+        self.assertIn("major == 2 && minor >= 97", self.administration)
+
+    def test_every_github_release_command_names_the_repository(self) -> None:
+        commands = [line.strip() for line in self.source.splitlines() if "gh release " in line]
+        self.assertGreater(len(commands), 0)
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertIn('--repo "$GITHUB_REPOSITORY"', command)
 
     def test_all_mutating_environments_have_distinct_exact_policy_ids(self) -> None:
         expected = {
